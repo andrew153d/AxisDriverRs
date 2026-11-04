@@ -1,0 +1,6 @@
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+rustflags = ["-C", "link-arg=-Tlink.x"]
+runner = "probe-rs run --chip ATSAMD51J19A --probe 03eb:2141:J42700037763 --protocol swd"
