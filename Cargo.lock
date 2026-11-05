@@ -22,7 +22,7 @@ dependencies = [
  "aes",
  "atsamd-hal-macros",
  "atsamd51j",
- "bitfield",
+ "bitfield 0.13.2",
  "bitflags",
  "cipher",
  "cortex-m",
@@ -30,7 +30,7 @@ dependencies = [
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-nb",
- "embedded-io",
+ "embedded-io 0.6.1",
  "fugit",
  "heapless",
  "modular-bitfield",
@@ -92,6 +92,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46afbd2983a5d5a7bd740ccb198caf5b82f45c40c09c0eed36052d91cb92e719"
 
 [[package]]
+name = "bitfield"
+version = "0.19.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b45721c9db4c7a20899d05efb7ad9235f50b256e980db30ffb229abf732934c3"
+dependencies = [
+ "bitfield-macros",
+]
+
+[[package]]
+name = "bitfield-macros"
+version = "0.19.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0cb6f3d4773a2107b94cbeccaa5b5f0b35a88389b5d522d13d659f64317b22d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -126,7 +146,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "408ca8c6d703a196b73219fdb68fd8914d4fda90c34e2bd6859d4842f761bd5f"
 dependencies = [
  "bare-metal",
- "bitfield",
+ "bitfield 0.13.2",
  "cortex-m-macros",
  "critical-section",
  "embedded-hal 0.2.7",
@@ -223,6 +243,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -246,6 +272,7 @@ dependencies = [
  "cortex-m-rt",
  "panic-halt",
  "rtt-target",
+ "tmc2209",
 ]
 
 [[package]]
@@ -623,6 +650,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tmc2209"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47237e55390d19f8380254088dd01cfb8215fd68489a337ee02d671670fbcc9b"
+dependencies = [
+ "bitfield 0.19.5",
+ "embedded-hal 1.0.0",
+ "embedded-io 0.7.1",
 ]
 
 [[package]]

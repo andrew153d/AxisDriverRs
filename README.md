@@ -1,8 +1,8 @@
 # AxisDriver SAMD51 LED firmware
 
-This workspace builds a `no_std` SAMD51J firmware image that drives PB13 as a
-push-pull output and alternates it high and low. It targets
-`thumbv7em-none-eabihf`.
+This workspace builds a `no_std` SAMD51J firmware image that alternates PB13
+as a push-pull status output and sets the PB5 WS2812 LED to dim green. It
+targets `thumbv7em-none-eabihf`.
 
 Build the ELF:
 
