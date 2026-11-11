@@ -11,6 +11,7 @@ use atsamd_hal::usb::{
 use axis_core::protocol::{FrameBuffer, ParseError, Request};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
+use crate::bootloader;
 use crate::clock;
 
 // Same identity as the original Arduino-based firmware.
@@ -48,6 +49,12 @@ impl UsbSerial {
             frames: FrameBuffer::new(),
             last_receive_ms: 0,
         }
+    }
+
+    /// Whether the host has asked for the bootloader, by setting the magic
+    /// baud rate and closing the port.
+    pub fn bootloader_requested(&self) -> bool {
+        self.port.line_coding().data_rate() == bootloader::TOUCH_BAUD_RATE && !self.port.dtr()
     }
 
     /// Whether a host has opened the port.

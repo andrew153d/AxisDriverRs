@@ -20,8 +20,8 @@ const HEADER_SIZE: usize = 4;
 const FOOTER_SIZE: usize = 2;
 /// Size of a frame with an empty body.
 pub const FRAME_OVERHEAD: usize = HEADER_SIZE + FOOTER_SIZE;
-/// Largest body the firmware ever sends.
-const MAX_REPLY_BODY: usize = 8;
+/// Largest body the firmware ever sends: one chunk of log text.
+pub const MAX_REPLY_BODY: usize = 240;
 
 /// Declares a `#[repr]` enum together with a checked conversion from its
 /// wire representation.
@@ -62,6 +62,8 @@ wire_enum! {
         GetEthernetPort = 0x0107,
         GetMacAddress = 0x0108,
         SaveConfiguration = 0x0109,
+        /// Not part of the original protocol.
+        GetLog = 0x010A,
         SetLedColor = 0x0200,
         GetLedColor = 0x0201,
         AddLedStep = 0x0202,
@@ -174,6 +176,10 @@ pub enum Request {
     GetEthernetPort,
     GetMacAddress,
     SaveConfiguration,
+    /// Fetch the next chunk of the firmware's log text. The reply body holds
+    /// up to [`MAX_REPLY_BODY`] bytes and is empty once everything has been
+    /// read.
+    GetLog,
     SetLedColor(Rgb),
     GetLedColor,
     AddLedStep {
@@ -264,6 +270,7 @@ impl Request {
             T::GetEthernetPort => Self::GetEthernetPort,
             T::GetMacAddress => Self::GetMacAddress,
             T::SaveConfiguration => Self::SaveConfiguration,
+            T::GetLog => Self::GetLog,
             T::SetLedColor => Self::SetLedColor(body.rgb()?),
             T::GetLedColor => Self::GetLedColor,
             T::AddLedStep => Self::AddLedStep {
@@ -315,6 +322,7 @@ impl Request {
             Self::GetEthernetPort => T::GetEthernetPort,
             Self::GetMacAddress => T::GetMacAddress,
             Self::SaveConfiguration => T::SaveConfiguration,
+            Self::GetLog => T::GetLog,
             Self::SetLedColor(_) => T::SetLedColor,
             Self::GetLedColor => T::GetLedColor,
             Self::AddLedStep { .. } => T::AddLedStep,
@@ -605,6 +613,14 @@ mod tests {
             Reply::new(MessageType::GetCurrentPosition, &1.8f64.to_le_bytes()).as_bytes(),
             &frame(0x0310, &1.8f64.to_le_bytes())[..]
         );
+    }
+
+    #[test]
+    fn log_chunks_fit_in_a_reply() {
+        assert_eq!(Request::parse(&frame(0x010A, &[])), Ok(Request::GetLog));
+        let chunk = [b'x'; MAX_REPLY_BODY];
+        let reply = Reply::new(MessageType::GetLog, &chunk);
+        assert_eq!(reply.as_bytes(), &frame(0x010A, &chunk)[..]);
     }
 
     #[test]

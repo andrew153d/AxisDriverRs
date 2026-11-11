@@ -2,11 +2,14 @@
 
 use core::fmt::Debug;
 
-use axis_core::protocol::{MotorState, ParseError, Reply, Request, Status, FIRMWARE_VERSION};
+use axis_core::protocol::{
+    MotorState, ParseError, Reply, Request, Status, FIRMWARE_VERSION, MAX_REPLY_BODY,
+};
 use log::warn;
 
 use crate::axis::Axis;
 use crate::clock::Delay;
+use crate::logger;
 
 /// The request was understood but could not be carried out.
 struct Failed;
@@ -64,6 +67,12 @@ impl Axis {
                     .save(&mut self.eeprom, &mut self.i2c, &mut Delay)
                     .map_err(failed)?;
                 None
+            }
+
+            R::GetLog => {
+                let mut chunk = [0; MAX_REPLY_BODY];
+                let length = logger::read(&mut chunk);
+                value(&chunk[..length])
             }
 
             // Status pixel

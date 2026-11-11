@@ -26,24 +26,81 @@ just test                     # unit tests of axis-core, on the host
 
 ## Flashing
 
-Over SWD with an Atmel-ICE and [probe-rs](https://probe.rs):
+The board carries a UF2 bootloader in the first 16 KiB of flash, which starts
+the firmware at `0x4000` (see `fw/memory.x`). Its image is kept in
+[`bootloader/`](bootloader).
+
+### Over USB
+
+```sh
+just flash-usb            # or: just flash-usb /dev/ttyACM1
+```
+
+This builds the firmware, asks the running firmware to reboot into the
+bootloader by opening its serial port at 1200 baud, and uploads with
+`bossac`. No button press or debugger is needed. `bossac` is taken from the
+PlatformIO package directory (`~/.platformio/packages/tool-bossac`).
+
+In bootloader mode the board also appears as a USB drive named `AXISBASIC`.
+If the firmware is too broken to answer on USB, the bootloader can only be
+reached by double-tapping reset, or the board recovered over SWD.
+
+### Over SWD
+
+With an Atmel-ICE and [probe-rs](https://probe.rs):
 
 ```sh
 just flash
 ```
 
 `cargo run --release -p fw` flashes the same way and then shows the firmware's
-log output, which is sent over RTT.
+log output live over RTT.
 
-Over the SAM-BA serial bootloader:
+A new board, or one whose bootloader has been overwritten, needs the
+bootloader flashed once over SWD:
 
 ```sh
-PORT=/dev/ttyACM0 SAMBA_DEVICE=atsamd51j19a ./flash.sh
+just flash-bootloader
 ```
 
-`fw/memory.x` places the image at the start of flash and is sized for a
-SAMD51J19A (512 KiB flash, 192 KiB RAM). Update it and `SAMBA_DEVICE` for a
-different part.
+`fw/memory.x` is sized for a SAMD51J19A (512 KiB flash, 192 KiB RAM).
+
+## Host tools
+
+[`tools/`](tools) holds small Python scripts (they need `pyserial`) built on
+`tools/axis.py`, a minimal client for the protocol:
+
+```sh
+just move to 90          # go to 90 degrees
+just move by -45         # move relative to the last target
+just move spin 400 -t 3  # run at 400 steps/s for 3 seconds
+just move demo           # a short back-and-forth sequence
+just logs                # print the firmware's log
+```
+
+`move` switches the motor outputs off again when it is done, unless given
+`--hold`, and prints anything the firmware logged meanwhile.
+
+## Logs
+
+The firmware logs through the `log` crate. Every message goes out over RTT,
+for an attached debugger, and into an 8 KiB buffer that the host can read
+back over USB:
+
+```sh
+just logs            # print what has been logged since the last read
+just logs --follow   # keep watching
+```
+
+Reading empties the buffer. If it fills up before being read, the oldest
+lines are dropped and the gap is marked in the output. Each line starts with
+the time since boot in seconds.
+
+This uses a message that the original protocol does not have:
+
+| Type | Name | Request body | Reply |
+| ---- | ---- | ------------ | ----- |
+| `0x010A` | Get Log | empty | same type; body is up to 240 bytes of UTF-8 log text, empty when there is nothing left |
 
 ## Motion control
 
@@ -64,7 +121,7 @@ detect the stall during homing.
 ## Power-on self test
 
 At start-up the firmware checks every peripheral it can verify on its own,
-logs the outcome over RTT and shows it on the status pixel as one flash per
+logs the outcome (see [Logs](#logs)) and shows it on the status pixel as one flash per
 check, green for pass and red for fail, in this order:
 
 1. **Step timer**: the timer counts at its nominal rate and its interrupt
@@ -87,7 +144,8 @@ not moved.
 
 ## Port status
 
-Ported: the complete serial protocol over USB, position / velocity / path /
+Ported: the complete serial protocol over USB (plus the Get Log message
+described above), position / velocity / path /
 homing motion, TMC2209 configuration, the shaft encoder, the status LEDs and
 settings storage in the EEPROM.
 

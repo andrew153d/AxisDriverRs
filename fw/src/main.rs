@@ -8,6 +8,8 @@
 //!   configuration
 //! - [`encoder`], [`led`]: the other on-board devices
 //! - [`usb_serial`]: the link to the host
+//! - [`logger`]: log output over RTT and, on request, to the host
+//! - [`bootloader`]: handing over to the USB bootloader for firmware uploads
 //! - [`commands`]: execution of host requests
 
 #![no_std]
@@ -15,10 +17,12 @@
 
 mod axis;
 mod board;
+mod bootloader;
 mod clock;
 mod commands;
 mod encoder;
 mod led;
+mod logger;
 mod motor;
 mod step_timer;
 mod tmc2209;
@@ -31,7 +35,6 @@ use axis_core::protocol::{Rgb, FIRMWARE_VERSION};
 use cortex_m_rt::entry;
 use log::info;
 use panic_halt as _;
-use rtt_target::{rtt_init_log, ChannelMode};
 
 use axis::Axis;
 use board::{Board, StatusLed, UserButton};
@@ -49,9 +52,7 @@ const WAITING_FOR_HOST_BLINK_MS: u32 = 80;
 
 #[entry]
 fn main() -> ! {
-    // Large enough to hold the whole self test report, so that none of it is
-    // dropped while the debugger is still catching up.
-    rtt_init_log!(log::LevelFilter::Debug, ChannelMode::NoBlockSkip, 8192);
+    logger::init();
     let mut board = Board::take();
     info!("Axis Driver firmware {:?} starting", FIRMWARE_VERSION);
 
@@ -71,6 +72,10 @@ fn main() -> ! {
 
     loop {
         usb.poll();
+        if usb.bootloader_requested() {
+            info!("Entering the bootloader");
+            bootloader::enter();
+        }
         while let Some(message) = usb.next_request() {
             axis.pixel.flash_activity(Rgb::GREEN);
             let reply = match message {

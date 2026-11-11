@@ -12,6 +12,7 @@
 pub mod eeprom;
 pub mod encoder;
 pub mod led;
+pub mod logbuf;
 pub mod motion;
 pub mod profile;
 pub mod protocol;
