@@ -2,13 +2,20 @@
 
     python -m axis ui [--port PORT]
 
-Shows the motor's state live and lets you enable it, move it to a position,
-jog it, spin it, change its limits, home it and read the firmware log.
+The board is reached over USB or, with an Ethernet HAT, over the network:
+choose which next to the Connect button. PORT may be a serial port or a
+network address as HOST:PORT.
+
+The Control page shows the motor's state live and lets you enable it, move
+it to a position, jog it, spin it, change its limits and home it. The
+Configuration page shows the board's identity and edits the settings kept in
+its EEPROM. The firmware log is at the bottom of both.
 Escape stops the motor. Closing the window switches the motor outputs off.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import math
 import tkinter as tk
 import tkinter.font as tkfont
@@ -16,11 +23,16 @@ from typing import Callable, Optional
 
 from . import DEFAULT_PORT, STEPS_PER_REVOLUTION, Axis, AxisError, MotorState
 from . import axis_pb2 as pb
+from .client import _network_address, ip_to_str
 
 #: How often the status is refreshed, and the log every few refreshes.
 POLL_MS = 100
 LOG_EVERY_POLLS = 5
 JOG_STEPS_DEG = (-90, -10, -1, 1, 10, 90)
+PAGES = ("Control", "Configuration")
+#: The ways to reach a board, with what the field next to them asks for.
+LINKS = {"USB": "Port", "Ethernet": "Address"}
+ADDRESS_EXAMPLE = "192.168.1.50:12000"
 
 
 class Theme:
@@ -132,11 +144,7 @@ class Button(tk.Canvas):
         self._command = command
         self._enabled = True
         self._hover = False
-        self._fill, self._fill_hover, self._ink = {
-            "normal": (theme.BUTTON, theme.BUTTON_HOVER, theme.TEXT),
-            "accent": (theme.ACCENT, theme.ACCENT_HOVER, "#ffffff"),
-            "danger": (theme.DANGER, theme.DANGER_HOVER, "#ffffff"),
-        }[kind]
+        self._kind = kind
         font = tkfont.Font(font=theme.button)
         super().__init__(
             parent,
@@ -160,6 +168,10 @@ class Button(tk.Canvas):
         self._text = text
         self._redraw()
 
+    def set_kind(self, kind: str) -> None:
+        self._kind = kind
+        self._redraw()
+
     def _set_hover(self, hover: bool) -> None:
         self._hover = hover
         self._redraw()
@@ -172,10 +184,18 @@ class Button(tk.Canvas):
     def _redraw(self) -> None:
         self.delete("all")
         width, height = self.winfo_width(), self.winfo_height()
+        theme = self._theme
+        fill, fill_hover, ink = {
+            "normal": (theme.BUTTON, theme.BUTTON_HOVER, theme.TEXT),
+            "accent": (theme.ACCENT, theme.ACCENT_HOVER, "#ffffff"),
+            "danger": (theme.DANGER, theme.DANGER_HOVER, "#ffffff"),
+            # A page tab that is not the page being shown.
+            "tab": (theme.WINDOW, theme.CARD, theme.MUTED),
+        }[self._kind]
         if not self._enabled:
-            fill, ink = self._theme.BUTTON, self._theme.DISABLED_TEXT
-        else:
-            fill, ink = (self._fill_hover if self._hover else self._fill), self._ink
+            fill, ink = theme.BUTTON, theme.DISABLED_TEXT
+        elif self._hover:
+            fill = fill_hover
         _rounded(self, 0, 0, width, height, 9, fill=fill)
         self.create_text(
             width / 2, height / 2, text=self._text, fill=ink, font=self._theme.button
@@ -297,7 +317,14 @@ class ControlPanel(tk.Frame):
         #: Widgets that only make sense while connected.
         self._controls: list[tk.Widget] = []
 
-        self.port = tk.StringVar(value=port)
+        #: What to connect to over each link: a serial port, and a network
+        #: address as host:port.
+        self.targets = {name: tk.StringVar() for name in LINKS}
+        self.link = "Ethernet" if _network_address(port) else "USB"
+        self.targets[self.link].set(port)
+        if self.link != "USB":
+            self.targets["USB"].set(DEFAULT_PORT)
+        self._link_buttons: dict[str, Button] = {}
         self.message = tk.StringVar()
         self.position = tk.StringVar(value="–")
         self.goto = tk.StringVar(value="0")
@@ -306,6 +333,19 @@ class ControlPanel(tk.Frame):
         self.acceleration = tk.StringVar()
         #: The small readouts under the dial, by name.
         self.readouts: dict[str, tk.StringVar] = {}
+
+        self.pages: dict[str, tk.Frame] = {}
+        self._tabs: dict[str, Button] = {}
+        self.ethernet_address = tk.StringVar()
+        self.ethernet_port = tk.StringVar()
+        self.i2c_address = tk.StringVar()
+        #: The board's identity on the configuration page, by name.
+        self.identity: dict[str, tk.StringVar] = {}
+        self._config_entries: list[tk.Entry] = []
+        #: The settings as last read from the device, in the form
+        #: `_entered_config` returns; ``None`` while not connected.
+        self._device_config: Optional[dict] = None
+        self._config_note = ""
 
         root.configure(bg=theme.WINDOW)
         self._build()
@@ -326,12 +366,20 @@ class ControlPanel(tk.Frame):
 
     def _build(self) -> None:
         theme = self.theme
-        self.columnconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
 
         header = tk.Frame(self, bg=theme.WINDOW)
-        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         self._label(header, "Axis Driver", muted=False, font=theme.title).pack(side="left")
+        tabs = tk.Frame(header, bg=theme.WINDOW)
+        tabs.pack(side="left", padx=(18, 0))
+        for name in PAGES:
+            self._tabs[name] = tab = Button(
+                tabs, theme, name, lambda name=name: self.show_page(name), kind="tab",
+                background=theme.WINDOW,
+            )  # fmt: skip
+            tab.pack(side="left", padx=(0, 4))
         self.connection_dot = tk.Canvas(
             header, width=12, height=12, bg=theme.WINDOW, highlightthickness=0
         )
@@ -343,14 +391,33 @@ class ControlPanel(tk.Frame):
             background=theme.WINDOW,
         )  # fmt: skip
         self.connect_button.pack(side="right")
-        self._entry(header, self.port, width=16).pack(side="right", padx=10, ipady=5)
-        self._label(header, "Port").pack(side="right")
+        self.target_entry = self._entry(header, self.targets[self.link], width=20)
+        self.target_entry.pack(side="right", padx=10, ipady=5)
+        self.target_entry.bind("<Return>", lambda _event: self.connect())
+        self.target_label = self._label(header)
+        self.target_label.pack(side="right", padx=(12, 0))
+        links = tk.Frame(header, bg=theme.WINDOW)
+        links.pack(side="right", padx=(20, 0))
+        for name in LINKS:
+            self._link_buttons[name] = button = Button(
+                links, theme, name, lambda name=name: self.select_link(name), kind="tab",
+                background=theme.WINDOW,
+            )  # fmt: skip
+            button.pack(side="left", padx=(0, 4))
+        self._show_link()
 
-        self._build_status().grid(row=1, column=0, sticky="nsew", padx=(0, 14))
-        self._build_controls().grid(row=1, column=1, sticky="nsew")
+        control = tk.Frame(self, bg=theme.WINDOW)
+        control.columnconfigure(1, weight=1)
+        self._build_status(control).grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        self._build_controls(control).grid(row=0, column=1, sticky="nsew")
+        self.pages = {"Control": control, "Configuration": self._build_configuration()}
+        # The pages share one cell, so the window keeps its size when switching.
+        for page in self.pages.values():
+            page.grid(row=1, column=0, sticky="nsew")
+        self.show_page("Control")
 
         log = Card(self, theme, "Firmware log")
-        log.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
+        log.grid(row=2, column=0, sticky="nsew", pady=(14, 0))
         self.log = tk.Text(
             log.body, height=7, width=96, state="disabled", wrap="none", font=theme.mono,
             bg=theme.CARD, fg=theme.MUTED, relief="flat", highlightthickness=0, borderwidth=0,
@@ -362,11 +429,16 @@ class ControlPanel(tk.Frame):
         tk.Label(
             self, textvariable=self.message, font=theme.body, fg=theme.DANGER, bg=theme.WINDOW,
             anchor="w",
-        ).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))  # fmt: skip
+        ).grid(row=3, column=0, sticky="ew", pady=(10, 0))  # fmt: skip
 
-    def _build_status(self) -> Card:
+    def show_page(self, name: str) -> None:
+        self.pages[name].lift()
+        for tab_name, tab in self._tabs.items():
+            tab.set_kind("normal" if tab_name == name else "tab")
+
+    def _build_status(self, parent: tk.Widget) -> Card:
         theme = self.theme
-        card = Card(self, theme, "Status")
+        card = Card(parent, theme, "Status")
         body = card.body
 
         self.state = self._label(body, "–", font=theme.heading)
@@ -388,9 +460,9 @@ class ControlPanel(tk.Frame):
             )
         return card
 
-    def _build_controls(self) -> tk.Frame:
+    def _build_controls(self, parent: tk.Widget) -> tk.Frame:
         theme = self.theme
-        column = tk.Frame(self, bg=theme.WINDOW)
+        column = tk.Frame(parent, bg=theme.WINDOW)
         column.columnconfigure(0, weight=1, uniform="half")
         column.columnconfigure(1, weight=1, uniform="half")
 
@@ -457,6 +529,69 @@ class ControlPanel(tk.Frame):
         self.home_button.pack(anchor="e", side="bottom")
         return column
 
+    def _build_configuration(self) -> tk.Frame:
+        theme = self.theme
+        page = tk.Frame(self, bg=theme.WINDOW)
+        page.columnconfigure(0, weight=1, uniform="half")
+        page.columnconfigure(1, weight=1, uniform="half")
+        page.rowconfigure(1, weight=1)
+
+        identity = Card(page, theme, "Identity  ·  read only")
+        identity.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 7))
+        for name in ("Firmware", "MAC address", "Serial number", "EEPROM self test"):
+            self.identity[name] = variable = tk.StringVar(value="–")
+            self._label(identity.body, name, font=theme.small).pack(anchor="w")
+            self._label(
+                identity.body, muted=False, font=theme.mono, textvariable=variable
+            ).pack(anchor="w", pady=(0, 10))
+        self._label(
+            identity.body, "The MAC address and serial number are\nprogrammed into the EEPROM "
+            "at the factory.", font=theme.small, justify="left",
+        ).pack(anchor="w", side="bottom")  # fmt: skip
+
+        ethernet = Card(page, theme, "Ethernet")
+        ethernet.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        fields = self._config_fields(
+            ethernet.body,
+            ("IP address", self.ethernet_address, "IPv4"),
+            ("UDP port", self.ethernet_port, "0 – 65535"),
+        )
+        fields.pack(fill="x")
+
+        i2c = Card(page, theme, "I2C")
+        i2c.grid(row=1, column=1, sticky="nsew", padx=(7, 0), pady=(14, 0))
+        fields = self._config_fields(i2c.body, ("Address", self.i2c_address, "0x00 – 0x7F"))
+        fields.pack(fill="x")
+
+        storage = Card(page, theme, "EEPROM")
+        storage.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        row = tk.Frame(storage.body, bg=theme.CARD)
+        row.pack(fill="x")
+        self._button(row, "Save to EEPROM", self.save_config, kind="accent").pack(side="right")
+        self._button(row, "Reload", self.reload_config, width=90).pack(side="right", padx=8)
+        self.config_state = self._label(row, "–", font=theme.heading)
+        self.config_state.pack(anchor="w")
+        self._label(
+            row, "The Ethernet settings take effect when the board next starts. The I2C "
+            "address is stored, but this firmware does not act on it yet.", font=theme.small,
+        ).pack(anchor="w")  # fmt: skip
+        return page
+
+    def _config_fields(self, parent: tk.Widget, *rows: tuple[str, tk.StringVar, str]) -> tk.Frame:
+        """A column of labelled entries for settings, each with a hint."""
+        fields = tk.Frame(parent, bg=parent["bg"])
+        fields.columnconfigure(0, weight=1)
+        for index, (label, variable, hint) in enumerate(rows):
+            self._label(fields, label).grid(row=index, column=0, sticky="w", pady=3)
+            entry = self._entry(fields, variable, width=16)
+            entry.grid(row=index, column=1, ipady=4, padx=6)
+            self._label(fields, hint, font=self.theme.small, width=11, anchor="w").grid(
+                row=index, column=2, sticky="w"
+            )
+            self._config_entries.append(entry)
+            variable.trace_add("write", lambda *_: self._show_config_state())
+        return fields
+
     def _button(
         self, parent: tk.Widget, text: str, command: Callable[[], None], **options
     ) -> Button:
@@ -471,7 +606,8 @@ class ControlPanel(tk.Frame):
             bg=theme.FIELD, fg=theme.TEXT, insertbackground=theme.TEXT, relief="flat",
             highlightthickness=1, highlightbackground=theme.FIELD_BORDER,
             highlightcolor=theme.ACCENT, selectbackground=theme.ACCENT,
-            selectforeground="#ffffff",
+            selectforeground="#ffffff", disabledbackground=theme.FIELD,
+            disabledforeground=theme.DISABLED_TEXT,
         )  # fmt: skip
 
     # -- Connection --------------------------------------------------------
@@ -482,12 +618,48 @@ class ControlPanel(tk.Frame):
         else:
             self.connect()
 
+    def select_link(self, name: str) -> None:
+        """Chooses between reaching the board over USB and over Ethernet."""
+        if name == self.link:
+            return
+        if self.axis:
+            self.message.set("Disconnect before changing how the board is reached")
+            return
+        self.message.set("")
+        self.link = name
+        self._show_link()
+
+    def _show_link(self) -> None:
+        for name, button in self._link_buttons.items():
+            button.set_kind("normal" if name == self.link else "tab")
+        self.target_label.configure(text=LINKS[self.link])
+        self.target_entry.configure(textvariable=self.targets[self.link])
+
+    def _target(self) -> str:
+        """What to hand to :class:`Axis` to connect over the chosen link."""
+        target = self.targets[self.link].get().strip()
+        if self.link == "Ethernet" and not _network_address(target):
+            raise ValueError(
+                f"Enter the board's address and UDP port, like {ADDRESS_EXAMPLE}"
+            )
+        if not target:
+            raise ValueError("Enter the board's serial port, like " + DEFAULT_PORT)
+        return target
+
     def connect(self) -> None:
+        if self.axis:
+            return
         self.message.set("")
         try:
-            self.axis = Axis(self.port.get())
+            target = self._target()
+        except ValueError as error:
+            self.message.set(str(error))
+            return
+        try:
+            self.axis = Axis(target)
             info = self.axis.info()
             status = self.axis.status()
+            config = self.axis.config()
         except (OSError, AxisError, TimeoutError) as error:
             self._drop_connection("Not connected")
             self.message.set(f"Could not connect: {error}")
@@ -503,7 +675,19 @@ class ControlPanel(tk.Frame):
         self.max_speed.set(str(status.motion.max_speed))
         self.acceleration.set(str(status.motion.acceleration))
         self.spin_slider.set_limit(status.motion.max_speed)
-        self._set_connected(True, f"Connected  ·  firmware {info.firmware_version}")
+        self._set_connected(
+            True, f"Connected over {self.link}  ·  firmware {info.firmware_version}"
+        )
+        if not self.targets["Ethernet"].get() and info.HasField("ethernet"):
+            # Offer the address the board is listening on.
+            self.targets["Ethernet"].set(
+                f"{ip_to_str(config.ethernet_address)}:{config.ethernet_port}"
+            )
+        self.identity["Firmware"].set(info.firmware_version)
+        self.identity["MAC address"].set(info.mac_address.hex(":").upper())
+        self.identity["Serial number"].set(info.serial_number.hex().upper())
+        self.identity["EEPROM self test"].set("passed" if info.self_test.eeprom else "FAILED")
+        self._show_config(config, "Read from the device")
 
     def disconnect(self) -> None:
         self._drop_connection("Not connected")
@@ -527,8 +711,14 @@ class ControlPanel(tk.Frame):
         self.connect_button.set_text("Disconnect" if connected else "Connect")
         for widget in self._controls:
             widget.set_enabled(connected)
+        for entry in self._config_entries:
+            entry.configure(state="normal" if connected else "disabled")
         if not connected:
             self._show_status(None)
+            for variable in self.identity.values():
+                variable.set("–")
+            self._device_config = None
+            self._show_config_state()
 
     def close(self) -> None:
         """Switches the motor off and closes the window."""
@@ -589,6 +779,76 @@ class ControlPanel(tk.Frame):
             self.spin_slider.set_limit(status.motion.max_speed)
 
         self._run(apply)
+
+    # -- Configuration -----------------------------------------------------
+
+    def reload_config(self) -> None:
+        """Discards what was typed in favour of the device's settings."""
+        self._run(lambda axis: self._show_config(axis.config(), "Read from the device"))
+
+    def save_config(self) -> None:
+        """Sends the settings to the device and has it write them to the EEPROM."""
+
+        def save(axis: Axis) -> None:
+            axis.configure(**self._entered_config())
+            self._show_config(axis.save_config(), "Saved to EEPROM")
+
+        self._run(save)
+
+    def _entered_config(self) -> dict:
+        """The settings in the entries, as arguments for `Axis.configure`.
+        Raises `ValueError`, worded for the user, if one makes no sense."""
+        try:
+            address = str(ipaddress.IPv4Address(self.ethernet_address.get().strip()))
+        except ValueError:
+            raise ValueError("The IP address must be an IPv4 address such as 192.168.0.10")
+        try:
+            port = int(self.ethernet_port.get())
+        except ValueError:
+            port = -1
+        if not 0 <= port <= 0xFFFF:
+            raise ValueError("The UDP port must be a number from 0 to 65535")
+        try:
+            # Base 0 takes hexadecimal with a 0x prefix as well as decimal.
+            i2c_address = int(self.i2c_address.get(), 0)
+        except ValueError:
+            i2c_address = -1
+        if not 0 <= i2c_address <= 0x7F:
+            raise ValueError("The I2C address must be from 0x00 to 0x7F")
+        return {
+            "ethernet_address": address,
+            "ethernet_port": port,
+            "i2c_address": i2c_address,
+        }
+
+    def _show_config(self, config: pb.Config, note: str) -> None:
+        """Fills the entries with the device's settings. ``note`` says where
+        they stand, and is shown for as long as the entries are left alone."""
+        self._device_config = {
+            "ethernet_address": ip_to_str(config.ethernet_address),
+            "ethernet_port": config.ethernet_port,
+            "i2c_address": config.i2c_address,
+        }
+        self._config_note = note
+        self.ethernet_address.set(self._device_config["ethernet_address"])
+        self.ethernet_port.set(str(config.ethernet_port))
+        self.i2c_address.set(f"{config.i2c_address:#04x}")
+        self._show_config_state()
+
+    def _show_config_state(self) -> None:
+        """Says whether the entries differ from the device's settings."""
+        theme = self.theme
+        if self._device_config is None:
+            self.config_state.configure(text="–", fg=theme.MUTED)
+            return
+        try:
+            changed = self._entered_config() != self._device_config
+        except ValueError:
+            changed = True
+        if changed:
+            self.config_state.configure(text="●  UNSAVED CHANGES", fg=theme.WARNING)
+        else:
+            self.config_state.configure(text=f"●  {self._config_note.upper()}", fg=theme.OK)
 
     def _show_spin_speed(self, speed: float) -> None:
         rpm = round(speed) / STEPS_PER_REVOLUTION * 60

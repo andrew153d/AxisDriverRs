@@ -21,3 +21,4 @@ pub mod selftest;
 pub mod settings;
 pub mod tlv493d;
 pub mod types;
+pub mod w5500;

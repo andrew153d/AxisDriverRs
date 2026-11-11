@@ -4,6 +4,9 @@
     python -m axis status
     python -m axis logs [--follow]
     python -m axis ui
+
+The board is reached over USB by default; "-p HOST:PORT" reaches it over
+Ethernet instead, e.g. "python -m axis -p 192.168.1.50:12000 status".
 """
 
 import argparse
@@ -25,6 +28,10 @@ def show_info(axis: Axis) -> None:
     for field in info.self_test.DESCRIPTOR.fields:
         passed = getattr(info.self_test, field.name)
         print(f"  {field.name:<12} {'pass' if passed else 'FAIL'}")
+    if info.HasField("ethernet"):
+        print(f"Ethernet      link {'up' if info.ethernet.link_up else 'down'}")
+    else:
+        print("Ethernet      not in use")
     print("Configuration")
     print(f"  Ethernet     {ip_to_str(config.ethernet_address)}:{config.ethernet_port}")
     print(f"  I2C address  {config.i2c_address:#04x}")
@@ -64,7 +71,12 @@ def show_logs(axis: Axis, follow: bool) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m axis", description=__doc__.splitlines()[0])
-    parser.add_argument("-p", "--port", default=DEFAULT_PORT)
+    parser.add_argument(
+        "-p",
+        "--port",
+        default=DEFAULT_PORT,
+        help="serial port, or HOST:PORT to use Ethernet (default: %(default)s)",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("info", help="identity, self test result and configuration")
     commands.add_parser("status", help="state of the motor")

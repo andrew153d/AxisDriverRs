@@ -7,7 +7,7 @@
 //! - [`motor`], [`step_timer`]: step generation in a timer interrupt, driver
 //!   configuration
 //! - [`encoder`], [`led`]: the other on-board devices
-//! - [`usb_serial`]: the link to the host
+//! - [`usb_serial`], [`ethernet`]: the links to the host
 //! - [`logger`]: log output over RTT and, on request, to the host
 //! - [`bootloader`]: handing over to the USB bootloader for firmware uploads
 //! - [`commands`]: execution of host requests
@@ -21,6 +21,7 @@ mod bootloader;
 mod clock;
 mod commands;
 mod encoder;
+mod ethernet;
 mod led;
 mod logger;
 mod motor;
@@ -31,8 +32,8 @@ mod ws2812;
 
 use atsamd_hal::ehal::digital::{InputPin, OutputPin};
 use atsamd_hal::usb::{usb_device::bus::UsbBusAllocator, UsbBus};
-use axis_core::framing;
-use axis_core::proto::FIRMWARE_VERSION;
+use axis_core::framing::{self, FrameError};
+use axis_core::proto::{Request, Response, FIRMWARE_VERSION};
 use axis_core::types::Rgb;
 use cortex_m_rt::entry;
 use log::{error, info};
@@ -40,6 +41,7 @@ use panic_halt as _;
 
 use axis::Axis;
 use board::{Board, StatusLed, UserButton};
+use ethernet::Ethernet;
 use led::StatusPixel;
 use motor::Motor;
 use tmc2209::Tmc2209;
@@ -51,6 +53,8 @@ const WAITING_FOR_HOST_COLOR: Rgb = Rgb::new(0x00, 0x00, 0xF0);
 /// How long the user button is watched for after power-up.
 const BOOT_BUTTON_WINDOW_MS: u32 = 1_500;
 const WAITING_FOR_HOST_BLINK_MS: u32 = 80;
+/// Shown once the Ethernet HAT is up, or in red if it could not be started.
+const ETHERNET_FLASH_MS: u32 = 100;
 
 #[entry]
 fn main() -> ! {
@@ -70,6 +74,7 @@ fn main() -> ! {
 
     let motor = Motor::start(board.motor, board.step_timer, Tmc2209::new(board.tmc_uart));
     let mut axis = Axis::start(motor, pixel, board.i2c, board.status_led);
+    let mut ethernet = start_ethernet(board.ethernet, &mut axis);
     info!("Axis Driver running");
 
     loop {
@@ -79,12 +84,7 @@ fn main() -> ! {
             bootloader::enter();
         }
         while let Some(message) = usb.next_request() {
-            axis.pixel.flash_activity(Rgb::GREEN);
-            let response = match message {
-                Ok(request) => Some(axis.handle(&request)),
-                Err(error) => commands::reject(error),
-            };
-            match response.as_ref().map(framing::encode) {
+            match answer(&mut axis, message).as_ref().map(framing::encode) {
                 Some(Ok(frame)) => {
                     axis.pixel.flash_activity(Rgb::BLUE);
                     usb.send(frame.as_bytes());
@@ -93,7 +93,52 @@ fn main() -> ! {
                 None => {}
             }
         }
+        if let Some(ethernet) = &mut ethernet {
+            ethernet.poll();
+            axis.ethernet_link = Some(ethernet.link_up());
+            while let Some((sender, message)) = ethernet.next_request() {
+                let response = answer(&mut axis, message);
+                match response.as_ref().map(framing::encode_datagram) {
+                    Some(Ok(datagram)) => {
+                        axis.pixel.flash_activity(Rgb::BLUE);
+                        ethernet.send(sender, &datagram);
+                    }
+                    Some(Err(error)) => error!("Response not sent: {:?}", error),
+                    None => {}
+                }
+            }
+        }
         axis.poll();
+    }
+}
+
+/// Carries out a request from the host and builds the response, if it gets
+/// one.
+fn answer(axis: &mut Axis, message: Result<Request, FrameError>) -> Option<Response> {
+    axis.pixel.flash_activity(Rgb::GREEN);
+    match message {
+        Ok(request) => Some(axis.handle(&request)),
+        Err(error) => commands::reject(error),
+    }
+}
+
+/// Brings up the Ethernet HAT, if one is fitted, and shows the outcome on
+/// the status pixel after the self test report.
+fn start_ethernet(hat: board::EthernetHat, axis: &mut Axis) -> Option<Ethernet> {
+    match Ethernet::start(hat, axis.mac_address, axis.settings.settings()) {
+        Ok(ethernet) => {
+            axis.pixel.flash(Rgb::PURPLE, ETHERNET_FLASH_MS);
+            Some(ethernet)
+        }
+        Err(ethernet::Fault::NotFitted) => {
+            info!("Ethernet: no HAT fitted");
+            None
+        }
+        Err(fault) => {
+            error!("Ethernet: HAT not started: {:?}", fault);
+            axis.pixel.flash(Rgb::RED, ETHERNET_FLASH_MS);
+            None
+        }
     }
 }
 

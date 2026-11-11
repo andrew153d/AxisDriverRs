@@ -12,8 +12,8 @@ project's host software.
 | Path | Contents |
 | ---- | -------- |
 | [`proto/axis.proto`](proto/axis.proto) | The host protocol: every request and response, with their meaning and units. The Rust and Python message types are both generated from it. |
-| [`core`](core) (`axis-core`) | Everything that does not touch the microcontroller: message framing, the speed profile, the motor state machine, encoder filtering, settings, and drivers for the I2C devices. Unit-tested on the host. |
-| [`fw`](fw) | The firmware image: board setup, the step timer interrupt, the TMC2209 and WS2812 drivers, the USB serial port and command execution. |
+| [`core`](core) (`axis-core`) | Everything that does not touch the microcontroller: message framing, the speed profile, the motor state machine, encoder filtering, settings, and drivers for the I2C devices and the W5500 Ethernet controller. Unit-tested on the host. |
+| [`fw`](fw) | The firmware image: board setup, the step timer interrupt, the TMC2209 and WS2812 drivers, the USB serial port, the Ethernet HAT and command execution. |
 | [`python`](python) | The `axis` Python package: the `Axis` class, a small command line tool and an example. |
 | [`bootloader`](bootloader) | The board's USB bootloader image. |
 
@@ -82,6 +82,9 @@ On the USB serial port each message travels in a frame: a little-endian
 `u16` payload length, the encoded message, and a little-endian
 CRC-16/CCITT-FALSE of the length and the payload.
 
+Over Ethernet each message is one UDP datagram holding just the encoded
+message; see [Ethernet](#ethernet).
+
 ## Python
 
 `python/` holds the `axis` package. Set it up once with
@@ -113,6 +116,9 @@ with Axis("/dev/ttyACM0") as axis:
     axis.disable()                        # outputs off
 ```
 
+A board with an Ethernet HAT is reached the same way by its address and UDP
+port instead of a serial port: `Axis("192.168.1.50:12000")`.
+
 Positions are in degrees; speeds are in steps per second, with 1600 steps to
 a revolution. Requests the device refuses raise `axis.CommandError`. The
 class also covers the status pixel, the stored configuration, homing and the
@@ -127,6 +133,17 @@ and reading the firmware log:
 just ui
 ```
 
+The USB and Ethernet buttons next to Connect choose how the board is reached:
+over a serial port, or over the network at an address given as `HOST:PORT`.
+After connecting over USB to a board with an Ethernet HAT, the address field
+is filled in with the one the board listens on. `just ui -p 192.168.1.50:12000`
+opens the panel connected over Ethernet.
+
+Its Configuration page shows the board's identity (firmware version, MAC
+address, serial number) and edits the settings kept in the EEPROM: the
+Ethernet address and port and the I2C address. "Save to EEPROM" sends them to
+the board and stores them permanently.
+
 Escape stops the motor, and closing the window switches its outputs off. It
 needs Tk, which comes with most Python installations.
 
@@ -139,10 +156,45 @@ just logs      # the firmware's log
 just demo      # run the motor through a short sequence of moves
 ```
 
+These talk to `/dev/ttyACM0` unless told otherwise: `just status -p /dev/ttyACM1`
+picks another serial port and `just status -p 192.168.1.50:12000` goes over
+Ethernet (`just demo 192.168.1.50:12000` for the demo).
+
 After changing `proto/axis.proto`, run `just proto` to regenerate
 `python/axis/axis_pb2.py`. It needs the Python `protobuf` package to be at
 least as new as `protoc`, which is why the package lives in its own
 environment.
+
+## Ethernet
+
+With the Ethernet HAT (a W5500 on the auxiliary port) fitted, the board takes
+the same requests over UDP as over USB, and both can be used at once. It
+listens on the address and port kept in the EEPROM; each datagram holds one
+`Request` and the `Response` goes back to where it came from. To set a board
+up, connect over USB and set the address and port on the control panel's
+Configuration page (or with `Axis.configure` and `Axis.save_config`), then
+restart the board: the settings are applied at start-up. After that
+
+```sh
+just info -p 192.168.1.50:12000
+```
+
+should answer, and the board answers pings.
+
+- The network is assumed to be a `255.255.255.0` one with its gateway at host
+  1, as in the original firmware. There is no DHCP.
+- At start-up the status pixel flashes purple after the self test report when
+  the HAT is up, and red when a HAT is fitted but could not be started, which
+  the log explains: usually the address or port has not been set. Without a
+  HAT nothing is shown.
+- `just info` shows whether the link is up. Each time it comes up the board
+  broadcasts a line of text such as `Axis Driver 2.0.0 at 192.168.1.50:12000`
+  to UDP port 35461, which is a way to find boards on a network.
+- Requests are neither authenticated nor encrypted: anyone who can reach the
+  port can run the motor. A firmware upload still needs USB.
+- UDP does not repeat lost datagrams and neither does the `Axis` class, since
+  repeating a relative move would move twice; a lost message raises
+  `TimeoutError`.
 
 ## Logs
 
@@ -205,9 +257,12 @@ Carried over: position, velocity, path and homing motion, TMC2209
 configuration, the shaft encoder, the status LEDs and settings storage in the
 EEPROM, in the layout the original firmware used.
 
-Not carried over: the Ethernet HAT (UDP transport) and the Home Assistant
-MQTT integration. The Ethernet address and port settings are stored and
-reported, but nothing uses them.
+Carried over as well, with the new protocol: control over UDP through the
+Ethernet HAT.
+
+Not carried over: the Home Assistant MQTT integration, and debug output over
+UDP (the log is read with `GetLog` instead, over either link). The I2C
+address setting is stored and reported, but nothing uses it.
 
 Different:
 

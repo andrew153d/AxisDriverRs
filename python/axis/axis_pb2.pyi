@@ -180,18 +180,26 @@ class Response(_message.Message):
     def __init__(self, id: _Optional[int] = ..., status: _Optional[_Union[Status, str]] = ..., info: _Optional[_Union[Info, _Mapping]] = ..., log: _Optional[_Union[Log, _Mapping]] = ..., config: _Optional[_Union[Config, _Mapping]] = ..., led: _Optional[_Union[Color, _Mapping]] = ..., motor: _Optional[_Union[Motor, _Mapping]] = ...) -> None: ...
 
 class Info(_message.Message):
-    __slots__ = ("firmware_version", "mac_address", "serial_number", "uptime_ms", "self_test")
+    __slots__ = ("firmware_version", "mac_address", "serial_number", "uptime_ms", "self_test", "ethernet")
     FIRMWARE_VERSION_FIELD_NUMBER: _ClassVar[int]
     MAC_ADDRESS_FIELD_NUMBER: _ClassVar[int]
     SERIAL_NUMBER_FIELD_NUMBER: _ClassVar[int]
     UPTIME_MS_FIELD_NUMBER: _ClassVar[int]
     SELF_TEST_FIELD_NUMBER: _ClassVar[int]
+    ETHERNET_FIELD_NUMBER: _ClassVar[int]
     firmware_version: str
     mac_address: bytes
     serial_number: bytes
     uptime_ms: int
     self_test: SelfTest
-    def __init__(self, firmware_version: _Optional[str] = ..., mac_address: _Optional[bytes] = ..., serial_number: _Optional[bytes] = ..., uptime_ms: _Optional[int] = ..., self_test: _Optional[_Union[SelfTest, _Mapping]] = ...) -> None: ...
+    ethernet: Ethernet
+    def __init__(self, firmware_version: _Optional[str] = ..., mac_address: _Optional[bytes] = ..., serial_number: _Optional[bytes] = ..., uptime_ms: _Optional[int] = ..., self_test: _Optional[_Union[SelfTest, _Mapping]] = ..., ethernet: _Optional[_Union[Ethernet, _Mapping]] = ...) -> None: ...
+
+class Ethernet(_message.Message):
+    __slots__ = ("link_up",)
+    LINK_UP_FIELD_NUMBER: _ClassVar[int]
+    link_up: bool
+    def __init__(self, link_up: bool = ...) -> None: ...
 
 class SelfTest(_message.Message):
     __slots__ = ("step_timer", "motor_driver", "encoder", "eeprom")

@@ -33,6 +33,8 @@ pub struct Axis {
     pub serial_number: [u8; 16],
     /// Outcome of the power-on self test.
     pub self_test: Report,
+    /// Whether the Ethernet link is up; `None` if the HAT is not in use.
+    pub ethernet_link: Option<bool>,
     /// `None` if the sensor failed the self test.
     encoder: Option<Encoder>,
     status_led: StatusLed,
@@ -107,6 +109,7 @@ impl Axis {
             mac_address,
             serial_number,
             self_test: report,
+            ethernet_link: None,
             encoder,
             status_led,
             last_heartbeat_ms: 0,

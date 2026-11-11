@@ -164,6 +164,9 @@ impl Axis {
             encoder: self.self_test.passed(Check::Encoder),
             eeprom: self.self_test.passed(Check::Eeprom),
         });
+        if let Some(link_up) = self.ethernet_link {
+            info.set_ethernet(proto::Ethernet { link_up });
+        }
         info
     }
 

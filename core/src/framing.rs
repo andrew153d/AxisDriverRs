@@ -81,6 +81,26 @@ pub enum FrameError {
     Malformed,
 }
 
+/// Encodes `message` on its own, for a transport that keeps messages apart
+/// and intact by itself, such as UDP.
+pub fn encode_datagram(message: &impl MessageEncode) -> Result<Vec<u8, MAX_PAYLOAD>, TooLarge> {
+    let mut encoder = PbEncoder::new(Vec::new());
+    message.encode(&mut encoder).map_err(|_| TooLarge)?;
+    Ok(encoder.into_writer())
+}
+
+/// Decodes a message that arrived on its own; see [`encode_datagram`].
+pub fn decode_datagram<M>(bytes: &[u8]) -> Result<M, FrameError>
+where
+    M: MessageDecode + Default,
+{
+    let mut message = M::default();
+    match message.decode_from_bytes(bytes) {
+        Ok(()) => Ok(message),
+        Err(_) => Err(FrameError::Malformed),
+    }
+}
+
 /// Reassembles frames from a byte stream such as the USB serial port, where
 /// a frame may arrive in pieces or several frames may arrive at once.
 #[derive(Default)]
@@ -138,15 +158,11 @@ impl FrameBuffer {
             return Some(Err(FrameError::BadCrc));
         }
 
-        let mut message = M::default();
-        let decoded = message.decode_from_bytes(&covered[LENGTH_SIZE..]);
+        let message = decode_datagram(&covered[LENGTH_SIZE..]);
         let remaining = self.bytes.len() - frame_length;
         self.bytes.copy_within(frame_length.., 0);
         self.bytes.truncate(remaining);
-        Some(match decoded {
-            Ok(()) => Ok(message),
-            Err(_) => Err(FrameError::Malformed),
-        })
+        Some(message)
     }
 }
 
@@ -302,6 +318,24 @@ mod tests {
         let mut buffer = FrameBuffer::new();
         buffer.extend(encode(&sent).unwrap().as_bytes());
         assert_eq!(buffer.next_message::<Request>(), Some(Ok(sent)));
+    }
+
+    #[test]
+    fn datagrams_hold_just_the_message() {
+        let sent = request(7, Command::GetInfo(GetInfo {}));
+        let datagram = encode_datagram(&sent).unwrap();
+        assert_eq!(datagram, [0x08, 0x07, 0x52, 0x00]);
+        assert_eq!(decode_datagram::<Request>(&datagram), Ok(sent));
+    }
+
+    #[test]
+    fn a_bad_datagram_is_malformed() {
+        assert_eq!(
+            decode_datagram::<Request>(&[0x08]),
+            Err(FrameError::Malformed)
+        );
+        // Nothing at all is a message with every field at its default.
+        assert_eq!(decode_datagram::<Request>(&[]), Ok(Request::default()));
     }
 
     #[test]

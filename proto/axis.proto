@@ -8,6 +8,10 @@
 //   payload                      the encoded Request or Response
 //   crc     u16, little-endian   CRC-16/CCITT-FALSE of length and payload
 //
+// Over Ethernet every message is one UDP datagram holding just the encoded
+// Request or Response, sent to the configured port of the device and answered
+// to wherever the request came from.
+//
 // Units: positions are in degrees of shaft rotation; speeds are in steps per
 // second and accelerations in steps per second squared, where one revolution
 // is 1600 steps.
@@ -148,6 +152,14 @@ message Info {
   bytes serial_number = 3;
   uint32 uptime_ms = 4;
   SelfTest self_test = 5;
+  // Absent if no Ethernet HAT is fitted or it could not be started.
+  Ethernet ethernet = 6;
+}
+
+// State of the Ethernet HAT.
+message Ethernet {
+  // Whether the cable is plugged in and the other end is alive.
+  bool link_up = 1;
 }
 
 // Outcome of the power-on self test; true means passed.
@@ -167,8 +179,12 @@ message Log {
 // fields that are present are changed, and nothing is stored permanently
 // until `save_config`.
 message Config {
-  // IPv4 address, first octet in the least significant byte.
+  // The device's IPv4 address, first octet in the least significant byte.
+  // It assumes a 255.255.255.0 network with its gateway at host 1. The
+  // Ethernet settings are applied at start-up, so a change takes effect once
+  // it has been saved and the device restarted.
   optional fixed32 ethernet_address = 1;
+  // UDP port on which the device listens for requests.
   optional uint32 ethernet_port = 2;
   optional uint32 i2c_address = 3;
 }

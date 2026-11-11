@@ -317,6 +317,7 @@ dependencies = [
  "axis-core",
  "cortex-m",
  "cortex-m-rt",
+ "heapless",
  "log",
  "panic-halt",
  "rtt-target",

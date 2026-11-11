@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import binascii
 import ipaddress
+import re
+import socket
 import struct
 import time
 from dataclasses import dataclass
@@ -11,6 +13,7 @@ from enum import IntEnum
 from typing import Callable, Iterable, Optional
 
 import serial
+from google.protobuf.message import DecodeError
 
 from . import axis_pb2 as pb
 
@@ -73,8 +76,100 @@ class PathSegment:
     relative: bool = True
 
 
+class _SerialLink:
+    """Messages over the USB serial port, each in a frame with a length and
+    a CRC."""
+
+    def __init__(self, port: str, timeout: float):
+        self._serial = serial.Serial(port, 115200, timeout=timeout)
+        self._serial.reset_input_buffer()
+
+    def close(self) -> None:
+        self._serial.close()
+
+    def send(self, payload: bytes) -> None:
+        frame = struct.pack("<H", len(payload)) + payload
+        self._serial.write(frame + struct.pack("<H", _crc16(frame)))
+
+    def receive(self) -> bytes:
+        header = self._serial.read(2)
+        if len(header) < 2:
+            raise TimeoutError("no response from the device")
+        (length,) = struct.unpack("<H", header)
+        if length > _MAX_PAYLOAD:
+            self.discard()
+            raise AxisError("response has an impossible length")
+        rest = self._serial.read(length + 2)
+        if len(rest) < length + 2:
+            raise TimeoutError("response cut short")
+        payload = rest[:length]
+        (crc,) = struct.unpack("<H", rest[length:])
+        if crc != _crc16(header + payload):
+            self.discard()
+            raise AxisError("response has a bad CRC")
+        return payload
+
+    def discard(self) -> None:
+        """Drops whatever has been received, to get back in step."""
+        self._serial.reset_input_buffer()
+
+
+class _UdpLink:
+    """Messages over Ethernet, each in a UDP datagram of its own."""
+
+    def __init__(self, host: str, port: int, timeout: float):
+        self._timeout = timeout
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # Only datagrams from the device are then received.
+            self._socket.connect((host, port))
+        except OSError:
+            self._socket.close()
+            raise
+
+    def close(self) -> None:
+        self._socket.close()
+
+    def send(self, payload: bytes) -> None:
+        # A late response to an earlier request must not answer this one.
+        self.discard()
+        self._socket.send(payload)
+
+    def receive(self) -> bytes:
+        self._socket.settimeout(self._timeout)
+        try:
+            return self._socket.recv(_MAX_PAYLOAD + 1)
+        except TimeoutError:
+            raise TimeoutError("no response from the device") from None
+        except ConnectionError as error:
+            # The host is there but nothing listens on the port.
+            raise AxisError(f"the device refused the request: {error}") from None
+
+    def discard(self) -> None:
+        self._socket.setblocking(False)
+        try:
+            while True:
+                self._socket.recv(_MAX_PAYLOAD + 1)
+        except OSError:
+            pass
+
+
+def _network_address(port: str) -> Optional[tuple[str, int]]:
+    """The host and UDP port that ``port`` names, if it is a network address
+    (``host:port``) rather than a serial port."""
+    match = re.fullmatch(r"(?:udp://)?([^/\\:\s]+):(\d{1,5})", port)
+    return (match[1], int(match[2])) if match else None
+
+
 class Axis:
-    """A connection to an Axis Driver board over its USB serial port.
+    """A connection to an Axis Driver board.
+
+    ``port`` is either the board's USB serial port, such as ``/dev/ttyACM0``,
+    or, to reach it through its Ethernet HAT, its address and UDP port as
+    ``host:port``, such as ``192.168.1.50:12000``. Everything works the same
+    over both. UDP may lose a message, which shows up as a
+    :class:`TimeoutError`; requests are never repeated automatically, as
+    repeating a relative move would move twice.
 
     Positions are in degrees of shaft rotation. Speeds are in steps per
     second and accelerations in steps per second squared, where one
@@ -84,18 +179,21 @@ class Axis:
     ``wait=True``; :meth:`wait_until_idle` waits for it to finish. Requests
     the device refuses raise :class:`CommandError`.
 
-    Can be used as a context manager, which closes the port on exit. The
+    Can be used as a context manager, which closes the connection on exit. The
     motor is left in whatever state it is in: call :meth:`disable` to switch
     it off.
     """
 
     def __init__(self, port: str = DEFAULT_PORT, timeout: float = 1.0):
-        self._serial = serial.Serial(port, 115200, timeout=timeout)
-        self._serial.reset_input_buffer()
+        address = _network_address(port)
+        if address:
+            self._link = _UdpLink(*address, timeout)
+        else:
+            self._link = _SerialLink(port, timeout)
         self._next_id = 1
 
     def close(self) -> None:
-        self._serial.close()
+        self._link.close()
 
     def __enter__(self) -> Axis:
         return self
@@ -118,42 +216,27 @@ class Axis:
         payload = request.SerializeToString()
         if len(payload) > _MAX_PAYLOAD:
             raise ValueError(f"{name} request is too large")
-        frame = struct.pack("<H", len(payload)) + payload
-        self._serial.write(frame + struct.pack("<H", _crc16(frame)))
+        self._link.send(payload)
 
-        response = self._read_response()
+        try:
+            response = pb.Response.FromString(self._link.receive())
+        except DecodeError:
+            self._link.discard()
+            raise AxisError(f"{name}: response cannot be decoded") from None
         if response.id != request.id:
-            # An answer to something else: the stream is out of step.
-            self._serial.reset_input_buffer()
+            # An answer to something else: the link is out of step.
+            self._link.discard()
             raise AxisError(f"{name}: response does not match the request")
         status = Status(response.status)
         if status != Status.OK:
             raise CommandError(name, status)
         return response
 
-    def _read_response(self) -> pb.Response:
-        header = self._serial.read(2)
-        if len(header) < 2:
-            raise TimeoutError("no response from the device")
-        (length,) = struct.unpack("<H", header)
-        if length > _MAX_PAYLOAD:
-            self._serial.reset_input_buffer()
-            raise AxisError("response has an impossible length")
-        rest = self._serial.read(length + 2)
-        if len(rest) < length + 2:
-            raise TimeoutError("response cut short")
-        payload = rest[:length]
-        (crc,) = struct.unpack("<H", rest[length:])
-        if crc != _crc16(header + payload):
-            self._serial.reset_input_buffer()
-            raise AxisError("response has a bad CRC")
-        return pb.Response.FromString(payload)
-
     # -- Device ------------------------------------------------------------
 
     def info(self) -> pb.Info:
-        """Firmware version, MAC address, serial number, uptime and the
-        outcome of the power-on self test."""
+        """Firmware version, MAC address, serial number, uptime, the outcome
+        of the power-on self test and the state of the Ethernet HAT."""
         return self._request(get_info=pb.GetInfo()).info
 
     @property
@@ -181,7 +264,9 @@ class Axis:
         """Changes the given settings and returns them all.
 
         ``ethernet_address`` is a dotted IPv4 address. The changes are lost
-        at power-off unless followed by :meth:`save_config`.
+        at power-off unless followed by :meth:`save_config`. The Ethernet
+        settings are applied when the board starts, so they take effect once
+        saved and the board restarted.
         """
         config = pb.Config()
         if ethernet_address is not None:
