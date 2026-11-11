@@ -4,7 +4,8 @@
 //! connects it to the board:
 //!
 //! - [`board`]: pin assignments, clocks and peripherals
-//! - [`motor`]: step generation in a timer interrupt, driver configuration
+//! - [`motor`], [`step_timer`]: step generation in a timer interrupt, driver
+//!   configuration
 //! - [`encoder`], [`led`]: the other on-board devices
 //! - [`usb_serial`]: the link to the host
 //! - [`commands`]: execution of host requests
@@ -19,6 +20,7 @@ mod commands;
 mod encoder;
 mod led;
 mod motor;
+mod step_timer;
 mod tmc2209;
 mod usb_serial;
 mod ws2812;

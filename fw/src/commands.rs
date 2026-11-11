@@ -111,12 +111,20 @@ impl Axis {
             ),
             R::GetHomedState => value(&[self.motor.motion(|motion| motion.is_homed()) as u8]),
             R::Home => {
+                // Homing watches the encoder for the shaft stalling; without
+                // one it would push against the end stop forever.
+                if !self.has_encoder() {
+                    return Err(failed("homing needs the encoder"));
+                }
                 self.motor.set_state(MotorState::Home).map_err(failed)?;
                 None
             }
 
             // Motion
             R::SetMotorState(state) => {
+                if state == MotorState::Home && !self.has_encoder() {
+                    return Err(failed("homing needs the encoder"));
+                }
                 self.motor.set_state(state).map_err(failed)?;
                 None
             }

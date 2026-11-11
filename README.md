@@ -1,6 +1,6 @@
 # Axis Driver firmware
 
-Rust firmware for the Axis Driver, a closed-loop stepper driver built around an
+Rust firmware for the Axis Driver, a stepper driver board built around an
 ATSAMD51J19A, a TMC2209 and a TLV493D magnetic shaft encoder. It is a port of
 the original Arduino/PlatformIO firmware (the `AxisDriver` repository) and
 speaks the same host protocol, documented in that repository's
@@ -11,7 +11,7 @@ working.
 
 | Crate | Contents |
 | ----- | -------- |
-| [`core`](core) (`axis-core`) | Everything that does not touch the microcontroller: the wire protocol, step timing, the motor state machine, encoder filtering, settings, and drivers for the I2C devices. Unit-tested on the host. |
+| [`core`](core) (`axis-core`) | Everything that does not touch the microcontroller: the wire protocol, the speed profile, the motor state machine, encoder filtering, settings, and drivers for the I2C devices. Unit-tested on the host. |
 | [`fw`](fw) | The firmware image: board setup, the step timer interrupt, the TMC2209 and WS2812 drivers, the USB serial port and command execution. |
 
 `fw/src/main.rs` lists the firmware modules; `core/src/protocol.rs` is the
@@ -45,13 +45,30 @@ PORT=/dev/ttyACM0 SAMBA_DEVICE=atsamd51j19a ./flash.sh
 SAMD51J19A (512 KiB flash, 192 KiB RAM). Update it and `SAMBA_DEVICE` for a
 different part.
 
+## Motion control
+
+Steps are scheduled against a free-running 32-bit hardware timer (TC2 and
+TC3 chained, 8.3 ns resolution) on an exact timeline: each step is due a
+computed interval after the previous one was *due*, so interrupt latency
+shifts individual pulses by microseconds but never accumulates into a speed
+error. The speed profile (`core/src/profile.rs`) uses constant-acceleration
+kinematics per step, so ramps are exact trapezoids and a position move ends
+on its target without creeping.
+
+Limitations: the step pulse is produced by the interrupt handler rather than
+by a timer output, so pulses jitter by the interrupt latency (worst when the
+status pixel is being written, about 40 us); the profile is trapezoidal, with
+no jerk limiting; and control is open loop, with the encoder used only to
+detect the stall during homing.
+
 ## Power-on self test
 
 At start-up the firmware checks every peripheral it can verify on its own,
 logs the outcome over RTT and shows it on the status pixel as one flash per
 check, green for pass and red for fail, in this order:
 
-1. **Step timer**: the step interrupt fires at its idle rate.
+1. **Step timer**: the timer counts at its nominal rate and its interrupt
+   fires at the idle rate.
 2. **Motor driver**: the TMC2209 answers on its UART, identifies as a
    TMC2209, accepted its configuration (it counts the writes), and reports no
    undervoltage of the motor supply, overtemperature or short circuit.
@@ -90,5 +107,16 @@ Deliberate differences from the original firmware:
 - "Get home direction" returns the value that was set.
 - The motor outputs stay disabled after power-up until the first motion
   command, rather than being enabled while the state reads `OFF`.
+- All motion is limited to the configured acceleration and maximum speed,
+  not just position moves. A velocity command ramps to its speed, and a path
+  ramps between segment speeds, carries speed across segments that continue
+  in the same direction, and brakes to a stop at its end. A path whose
+  speed changes are sharper than the acceleration setting allows will
+  therefore lag its nominal timing; raise the acceleration to tighten it.
+- `IDLE_ON` brakes a moving motor to a stop instead of freezing it mid-step;
+  `OFF` and "set current position" still stop it dead.
+- Path segments with zero speed or zero length are skipped instead of
+  stalling the path.
+- Homing is refused with an `ERROR` ACK if the encoder failed its self test.
 - The queues for LED steps (32) and path segments (1024) are bounded; a
   command that does not fit is answered with an `ERROR` ACK.

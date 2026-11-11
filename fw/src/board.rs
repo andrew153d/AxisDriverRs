@@ -14,9 +14,10 @@ use atsamd_hal::{
         uart::{self, BaudMode, Oversampling},
         Sercom0, Sercom3,
     },
-    timer::TimerCounter2,
     usb::{usb_device::bus::UsbBusAllocator, UsbBus},
 };
+
+use crate::step_timer::StepTimer;
 
 pub const CPU_HZ: u32 = 120_000_000;
 
@@ -24,8 +25,6 @@ pub type StatusLed = Pin<PB13, PushPullOutput>;
 pub type PixelPin = Pin<PB05, PushPullOutput>;
 pub type UserButton = Pin<PA15, PullUpInput>;
 
-/// Timer that paces the step pulses.
-pub type StepTimer = TimerCounter2;
 /// Single-wire UART to the TMC2209.
 pub type TmcUart = uart::Uart<uart::Config<uart::PadsFromIds<Sercom0, PA07, PA04>>, uart::Duplex>;
 /// Internal I2C bus with the shaft encoder and the EEPROM.
@@ -95,10 +94,11 @@ impl Board {
         motor.ms2.set_low().unwrap();
         motor.spread.set_low().unwrap();
 
-        let step_timer = TimerCounter2::tc2_(
-            &clocks.tc2_tc3(&gclk0).unwrap(),
+        let step_timer = StepTimer::new(
             peripherals.tc2,
+            peripherals.tc3,
             &mut peripherals.mclk,
+            &clocks.tc2_tc3(&gclk0).unwrap(),
         );
 
         let tmc_uart = uart::Config::new(

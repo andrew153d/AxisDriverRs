@@ -107,6 +107,11 @@ impl Axis {
         }
     }
 
+    /// Whether the shaft encoder passed its self test and is in use.
+    pub fn has_encoder(&self) -> bool {
+        self.encoder.is_some()
+    }
+
     /// Runs the background work. Call continuously from the main loop.
     pub fn poll(&mut self) {
         if let Some(encoder) = &mut self.encoder {
@@ -115,7 +120,7 @@ impl Axis {
             }
         }
 
-        if self.motor.motion(|motion| motion.take_path_finished()) {
+        if self.motor.take_path_finished() {
             self.pixel.flash(Rgb::PURPLE, PATH_FINISHED_FLASH_MS);
         }
         self.pixel.poll();
