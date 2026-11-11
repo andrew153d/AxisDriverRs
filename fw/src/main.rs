@@ -31,9 +31,11 @@ mod ws2812;
 
 use atsamd_hal::ehal::digital::{InputPin, OutputPin};
 use atsamd_hal::usb::{usb_device::bus::UsbBusAllocator, UsbBus};
-use axis_core::protocol::{Rgb, FIRMWARE_VERSION};
+use axis_core::framing;
+use axis_core::proto::FIRMWARE_VERSION;
+use axis_core::types::Rgb;
 use cortex_m_rt::entry;
-use log::info;
+use log::{error, info};
 use panic_halt as _;
 
 use axis::Axis;
@@ -54,7 +56,7 @@ const WAITING_FOR_HOST_BLINK_MS: u32 = 80;
 fn main() -> ! {
     logger::init();
     let mut board = Board::take();
-    info!("Axis Driver firmware {:?} starting", FIRMWARE_VERSION);
+    info!("Axis Driver firmware {} starting", FIRMWARE_VERSION);
 
     let usb_bus = cortex_m::singleton!(: UsbBusAllocator<UsbBus> = board.usb).unwrap();
     let mut usb = UsbSerial::new(usb_bus);
@@ -78,13 +80,17 @@ fn main() -> ! {
         }
         while let Some(message) = usb.next_request() {
             axis.pixel.flash_activity(Rgb::GREEN);
-            let reply = match message {
-                Ok(request) => Some(axis.handle(request)),
+            let response = match message {
+                Ok(request) => Some(axis.handle(&request)),
                 Err(error) => commands::reject(error),
             };
-            if let Some(reply) = reply {
-                axis.pixel.flash_activity(Rgb::BLUE);
-                usb.send(reply.as_bytes());
+            match response.as_ref().map(framing::encode) {
+                Some(Ok(frame)) => {
+                    axis.pixel.flash_activity(Rgb::BLUE);
+                    usb.send(frame.as_bytes());
+                }
+                Some(Err(error)) => error!("Response not sent: {:?}", error),
+                None => {}
             }
         }
         axis.poll();

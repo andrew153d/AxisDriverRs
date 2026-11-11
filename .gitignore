@@ -2,4 +2,6 @@
 *.bin
 # The bootloader image is a source file, not a build product.
 !/bootloader/*.bin
+/.venv/
 __pycache__/
+*.egg-info/

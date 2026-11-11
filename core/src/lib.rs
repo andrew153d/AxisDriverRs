@@ -11,11 +11,13 @@
 
 pub mod eeprom;
 pub mod encoder;
+pub mod framing;
 pub mod led;
 pub mod logbuf;
 pub mod motion;
 pub mod profile;
-pub mod protocol;
+pub mod proto;
 pub mod selftest;
 pub mod settings;
 pub mod tlv493d;
+pub mod types;

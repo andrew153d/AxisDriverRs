@@ -8,7 +8,8 @@ use atsamd_hal::usb::{
     },
     UsbBus,
 };
-use axis_core::protocol::{FrameBuffer, ParseError, Request};
+use axis_core::framing::{FrameBuffer, FrameError};
+use axis_core::proto::Request;
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 use crate::bootloader;
@@ -78,8 +79,8 @@ impl UsbSerial {
     }
 
     /// Takes the next message received from the host.
-    pub fn next_request(&mut self) -> Option<Result<Request, ParseError>> {
-        self.frames.next_request()
+    pub fn next_request(&mut self) -> Option<Result<Request, FrameError>> {
+        self.frames.next_message()
     }
 
     /// Sends a frame to the host. It is dropped if no host is reading.

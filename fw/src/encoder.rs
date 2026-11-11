@@ -52,15 +52,36 @@ impl Encoder {
             return Err(Fault::Magnet(field));
         }
 
+        let mut tracker = ShaftTracker::new(
+            field.azimuth_degrees(),
+            clock::micros(),
+            1_000.0 / MEASUREMENT_PERIOD_MS as f32,
+        );
+        // The motor's commanded position starts at zero, so count the shaft
+        // angle from here too. The two then only differ by how far the shaft
+        // is from where it was told to go.
+        tracker.set_position_degrees(0.0);
+
         Ok(Self {
             sensor,
-            tracker: ShaftTracker::new(
-                field.azimuth_degrees(),
-                clock::micros(),
-                1_000.0 / MEASUREMENT_PERIOD_MS as f32,
-            ),
+            tracker,
             last_sample_ms: clock::millis(),
         })
+    }
+
+    /// Multi-turn shaft position in degrees, counted from the same zero as
+    /// the motor's commanded position.
+    pub fn position_degrees(&self) -> f32 {
+        self.tracker.position_degrees()
+    }
+
+    /// Redefines the current shaft position.
+    pub fn set_position_degrees(&mut self, degrees: f32) {
+        self.tracker.set_position_degrees(degrees);
+    }
+
+    pub fn velocity_deg_per_s(&self) -> f32 {
+        self.tracker.velocity_deg_per_s()
     }
 
     /// Samples the sensor when a new measurement is due. Returns fresh

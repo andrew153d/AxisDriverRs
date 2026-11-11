@@ -1,0 +1,273 @@
+// The Axis Driver host protocol.
+//
+// The host sends a Request and the device answers each one with exactly one
+// Response carrying the same `id`. On a byte stream (USB serial) every
+// message travels in a frame:
+//
+//   length  u16, little-endian   number of payload bytes
+//   payload                      the encoded Request or Response
+//   crc     u16, little-endian   CRC-16/CCITT-FALSE of length and payload
+//
+// Units: positions are in degrees of shaft rotation; speeds are in steps per
+// second and accelerations in steps per second squared, where one revolution
+// is 1600 steps.
+
+syntax = "proto3";
+
+package axis;
+
+// ---------------------------------------------------------------------------
+// Requests
+
+message Request {
+  // Chosen by the host and echoed in the response.
+  uint32 id = 1;
+
+  oneof command {
+    // Device
+    GetInfo get_info = 10;
+    GetLog get_log = 11;
+    GetConfig get_config = 12;
+    Config set_config = 13;
+    SaveConfig save_config = 14;
+
+    // Status pixel
+    GetLed get_led = 20;
+    Color set_led = 21;
+    LedStep add_led_step = 22;
+
+    // Motor
+    GetMotor get_motor = 30;
+    SetMotorState set_motor_state = 31;
+    MoveTo move_to = 32;
+    MoveBy move_by = 33;
+    SetVelocity set_velocity = 34;
+    SetPosition set_position = 35;
+    MotionSettings set_motion = 36;
+    HomingSettings set_homing = 37;
+    Home home = 38;
+    AddPath add_path = 39;
+    StartPath start_path = 40;
+  }
+}
+
+// Answered with `Response.info`.
+message GetInfo {}
+
+// Fetches, and removes, the oldest text in the firmware's log buffer.
+// Answered with `Response.log`; repeat until the text comes back empty.
+message GetLog {}
+
+// Answered with `Response.config`.
+message GetConfig {}
+
+// Writes the configuration to non-volatile memory. Answered with
+// `Response.config`.
+message SaveConfig {}
+
+// Answered with `Response.led`.
+message GetLed {}
+
+// Answered with `Response.motor`, as are all the motor commands below.
+message GetMotor {}
+
+message SetMotorState {
+  MotorState state = 1;
+}
+
+// Starts a move to an absolute position.
+message MoveTo {
+  double degrees = 1;
+}
+
+// Starts a move relative to the previous target, so that successive relative
+// moves do not accumulate errors.
+message MoveBy {
+  double degrees = 1;
+}
+
+// Accelerates to a constant velocity, limited to the maximum speed. Negative
+// is counter-clockwise.
+message SetVelocity {
+  double steps_per_s = 1;
+}
+
+// Redefines the current position, and the encoder's with it, without moving.
+// A moving motor is stopped dead.
+message SetPosition {
+  double degrees = 1;
+}
+
+// Runs the sensorless homing sequence. Fails without a working encoder.
+message Home {}
+
+// Queues path segments. Either all of them are queued or, if there is not
+// enough room, none.
+message AddPath {
+  repeated PathSegment segments = 1;
+}
+
+// Starts playing back the queued path.
+message StartPath {}
+
+// ---------------------------------------------------------------------------
+// Responses
+
+message Response {
+  // The `id` of the request being answered; zero if it could not be decoded.
+  uint32 id = 1;
+  Status status = 2;
+
+  // The state after the request, where the request concerns one of these.
+  // Present even when the request failed.
+  oneof result {
+    Info info = 10;
+    Log log = 11;
+    Config config = 12;
+    Color led = 20;
+    Motor motor = 30;
+  }
+}
+
+enum Status {
+  // The request was carried out.
+  STATUS_OK = 0;
+  // The request was understood but could not be carried out. The firmware
+  // log says why.
+  STATUS_ERROR = 1;
+  // The request could not be decoded, or held no known command or an
+  // invalid value.
+  STATUS_INVALID = 2;
+}
+
+message Info {
+  // For example "2.0.0".
+  string firmware_version = 1;
+  // Globally unique EUI-48.
+  bytes mac_address = 2;
+  bytes serial_number = 3;
+  uint32 uptime_ms = 4;
+  SelfTest self_test = 5;
+}
+
+// Outcome of the power-on self test; true means passed.
+message SelfTest {
+  bool step_timer = 1;
+  bool motor_driver = 2;
+  bool encoder = 3;
+  bool eeprom = 4;
+}
+
+message Log {
+  // UTF-8 text; empty when everything has been read.
+  bytes text = 1;
+}
+
+// Settings kept in non-volatile memory. In a `set_config` request only the
+// fields that are present are changed, and nothing is stored permanently
+// until `save_config`.
+message Config {
+  // IPv4 address, first octet in the least significant byte.
+  optional fixed32 ethernet_address = 1;
+  optional uint32 ethernet_port = 2;
+  optional uint32 i2c_address = 3;
+}
+
+message Color {
+  uint32 red = 1;
+  uint32 green = 2;
+  uint32 blue = 3;
+}
+
+// Queues a color to be shown for a time, after the colors already queued.
+message LedStep {
+  Color color = 1;
+  uint32 duration_ms = 2;
+}
+
+enum MotorState {
+  // Driver outputs disabled.
+  MOTOR_STATE_OFF = 0;
+  // Moving to the target position.
+  MOTOR_STATE_POSITION = 1;
+  // Running at the target velocity.
+  MOTOR_STATE_VELOCITY = 2;
+  // Playing back the queued path.
+  MOTOR_STATE_PATH = 3;
+  // Driver outputs enabled, holding position. Setting this state brakes a
+  // moving motor to a stop.
+  MOTOR_STATE_IDLE = 4;
+  // Running the homing sequence.
+  MOTOR_STATE_HOMING = 5;
+}
+
+// What the driver does with the motor at standstill.
+enum Brake {
+  BRAKE_NORMAL = 0;
+  BRAKE_FREEWHEEL = 1;
+  BRAKE_STRONG = 2;
+  BRAKE_PASSIVE = 3;
+}
+
+enum Direction {
+  DIRECTION_CLOCKWISE = 0;
+  DIRECTION_COUNTERCLOCKWISE = 1;
+}
+
+message Motor {
+  MotorState state = 1;
+  // Commanded position, in degrees.
+  double position = 2;
+  // Target of the position mode, in degrees.
+  double target = 3;
+  // Commanded velocity right now, in steps per second.
+  float velocity = 4;
+  // Target of the velocity mode, in steps per second.
+  double target_velocity = 5;
+  MotionSettings motion = 6;
+  HomingSettings homing = 7;
+  // Whether the last homing sequence ran to completion.
+  bool homed = 8;
+  // Number of path segments waiting, and how many more would fit.
+  uint32 path_queued = 9;
+  uint32 path_free = 10;
+  // Absent if the encoder failed the self test.
+  Encoder encoder = 11;
+}
+
+// Shaft measurements from the magnetic encoder.
+message Encoder {
+  // Multi-turn shaft position in degrees, counted from the same zero as the
+  // commanded position: zero at power-up, and redefined together with it by
+  // `set_position`. The difference between the two is how far the shaft is
+  // from where it was told to go.
+  float position = 1;
+  // Degrees per second.
+  float velocity = 2;
+}
+
+// Limits that apply to all motion. In a request only the fields that are
+// present are changed.
+message MotionSettings {
+  optional uint32 max_speed = 1;
+  optional uint32 acceleration = 2;
+  optional Brake brake = 3;
+}
+
+// In a request only the fields that are present are changed.
+message HomingSettings {
+  // Direction in which the end stop lies.
+  optional Direction direction = 1;
+  optional uint32 speed = 2;
+  // StallGuard threshold of the driver.
+  optional uint32 threshold = 3;
+}
+
+// One leg of a path: travel at `speed` until `steps` is reached.
+message PathSegment {
+  uint32 speed = 1;
+  sint32 steps = 2;
+  // Whether `steps` is relative to the end of the previous segment rather
+  // than an absolute position.
+  bool relative = 3;
+}

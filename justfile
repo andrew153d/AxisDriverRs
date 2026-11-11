@@ -24,15 +24,36 @@ enter-bootloader port="/dev/ttyACM0":
     stty -F "{{port}}" 1200
     sleep 3
 
+# Create the Python environment in .venv with the `axis` package installed.
+python-setup:
+    python3 -m venv .venv
+    .venv/bin/pip install --quiet --editable python
+
+# Regenerate the Python message classes after changing proto/axis.proto.
+# The Rust ones are generated at build time.
+proto:
+    protoc -Iproto --python_out=python/axis --pyi_out=python/axis proto/axis.proto
+
+# Show the board's identity, self test result and configuration.
+info *args:
+    .venv/bin/python -m axis {{args}} info
+
+# Show the state of the motor.
+status *args:
+    .venv/bin/python -m axis {{args}} status
+
 # Print the firmware's log, fetched over USB. Pass "--follow" to keep
 # watching, e.g. `just logs --follow`.
 logs *args:
-    python3 tools/logs.py {{args}}
+    .venv/bin/python -m axis logs {{args}}
 
-# Move the motor, e.g. `just move to 90`, `just move spin 400 -t 3` or
-# `just move demo`. See `just move --help`.
-move *args:
-    python3 tools/move.py {{args}}
+# Open the control panel.
+ui *args:
+    .venv/bin/python -m axis {{args}} ui
+
+# Run the motor through a short sequence of moves.
+demo *args:
+    .venv/bin/python python/examples/demo.py {{args}}
 
 # Query the bootloader. The board must be in bootloader mode.
 ping port="/dev/ttyACM0":

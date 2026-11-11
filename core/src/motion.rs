@@ -13,7 +13,7 @@ use heapless::Deque;
 use libm::fabsf;
 
 use crate::profile::{Direction, Goal, Limits, Profile};
-use crate::protocol::{HomeDirection, MotorState, PositionMode};
+use crate::types::{HomeDirection, MotorState, PositionMode};
 
 /// Microsteps per revolution: a 200 step motor driven at 8 microsteps.
 pub const STEPS_PER_REVOLUTION: i32 = 200 * 8;
@@ -203,17 +203,17 @@ impl Motion {
         match state {
             // Cutting the power stops the motor whatever the profile says.
             MotorState::Off => self.profile.halt(),
-            MotorState::IdleOn => self.profile.set_goal(Goal::Stop, self.now),
+            MotorState::Idle => self.profile.set_goal(Goal::Stop, self.now),
             MotorState::Position => self.profile.set_goal(Goal::stop_at(self.target), self.now),
             MotorState::Velocity => self
                 .profile
                 .set_goal(Goal::Velocity(self.target_velocity as f32), self.now),
-            MotorState::VelocityStep => {
-                if self.state != MotorState::VelocityStep {
+            MotorState::Path => {
+                if self.state != MotorState::Path {
                     self.segment = None;
                 }
             }
-            MotorState::Home => {
+            MotorState::Homing => {
                 self.homing.phase = HomingPhase::Coarse;
                 self.homing.reached_speed = false;
                 self.homing.homed = false;
@@ -228,14 +228,14 @@ impl Motion {
     /// Moves the multi-stage modes along.
     fn supervise(&mut self) {
         match self.state {
-            MotorState::Off | MotorState::IdleOn | MotorState::Velocity => {}
+            MotorState::Off | MotorState::Idle | MotorState::Velocity => {}
             MotorState::Position => {
                 if self.profile.is_stopped() {
-                    self.state = MotorState::IdleOn;
+                    self.state = MotorState::Idle;
                 }
             }
-            MotorState::VelocityStep => self.supervise_path(),
-            MotorState::Home => self.supervise_homing(),
+            MotorState::Path => self.supervise_path(),
+            MotorState::Homing => self.supervise_homing(),
         }
     }
 
@@ -261,7 +261,7 @@ impl Motion {
         }
         // Out of segments. The last one brakes to a stop at its end.
         if self.profile.is_stopped() {
-            self.state = MotorState::IdleOn;
+            self.state = MotorState::Idle;
             self.path_finished = true;
         }
     }
@@ -324,7 +324,7 @@ impl Motion {
                 if self.shaft_has_stalled(approach_speed, self.homing.fine_speed * 0.6) {
                     self.profile.halt();
                     self.homing.homed = true;
-                    self.state = MotorState::IdleOn;
+                    self.state = MotorState::Idle;
                 }
             }
         }
@@ -376,6 +376,12 @@ impl Motion {
         self.profile.set_limits(limits, self.now);
     }
 
+    /// Speed the motor is being driven at right now, in steps per second;
+    /// negative is counter-clockwise.
+    pub fn velocity(&self) -> f32 {
+        self.profile.velocity()
+    }
+
     pub fn position_degrees(&self) -> f64 {
         steps_to_degrees(self.profile.position())
     }
@@ -387,7 +393,7 @@ impl Motion {
         self.profile.set_position(self.target);
         self.segment = None;
         if self.state != MotorState::Off {
-            self.state = MotorState::IdleOn;
+            self.state = MotorState::Idle;
         }
     }
 
@@ -423,27 +429,32 @@ impl Motion {
         self.set_state(MotorState::Velocity);
     }
 
-    /// Queues a path segment: travel at `velocity` steps per second until
-    /// `steps` is reached. Start the path with
-    /// [`MotorState::VelocityStep`].
+    /// Queues a path segment: travel at `speed` steps per second until
+    /// `steps` is reached. Start the path with [`MotorState::Path`].
     pub fn add_path_segment(
         &mut self,
-        velocity: i32,
+        speed: u32,
         steps: i32,
         mode: PositionMode,
     ) -> Result<(), PathFull> {
-        let segment = PathSegment {
-            mode,
-            speed: velocity.unsigned_abs(),
-            steps,
-        };
+        let segment = PathSegment { mode, speed, steps };
         self.path.push_back(segment).map_err(|_| PathFull)?;
-        if self.state == MotorState::VelocityStep && self.path.len() == 1 {
+        if self.state == MotorState::Path && self.path.len() == 1 {
             // The segment being travelled was going to stop at its end; it
             // may now be able to run on into this one.
             self.aim_at_segment();
         }
         Ok(())
+    }
+
+    /// Number of path segments waiting to be travelled.
+    pub fn path_queued(&self) -> usize {
+        self.path.len()
+    }
+
+    /// Number of further path segments that can be queued.
+    pub fn path_free(&self) -> usize {
+        PATH_CAPACITY - self.path.len()
     }
 
     /// Returns `true` once after a path has run to completion.
@@ -546,7 +557,7 @@ mod tests {
         assert!(motion.outputs_enabled());
 
         assert_eq!(run_for(&mut motion, &mut now, 2_000_000), 400);
-        assert_eq!(motion.state(), MotorState::IdleOn);
+        assert_eq!(motion.state(), MotorState::Idle);
         assert_eq!(motion.position_degrees(), 90.0);
         assert_eq!(motion.target_degrees(), 90.0);
     }
@@ -555,7 +566,7 @@ mod tests {
     fn a_move_to_the_current_position_goes_straight_to_idle() {
         let mut motion = Motion::new(TICK_HZ);
         motion.move_to_degrees(0.0);
-        assert_eq!(motion.state(), MotorState::IdleOn);
+        assert_eq!(motion.state(), MotorState::Idle);
     }
 
     #[test]
@@ -600,7 +611,7 @@ mod tests {
         motion.set_target_velocity(800.0);
         run_for(&mut motion, &mut now, 1_000_000);
 
-        motion.set_state(MotorState::IdleOn);
+        motion.set_state(MotorState::Idle);
         let braking = run_for(&mut motion, &mut now, 1_000_000);
         assert!((98..=101).contains(&braking), "{braking} steps");
         assert_eq!(run_for(&mut motion, &mut now, 100_000), 0);
@@ -620,7 +631,7 @@ mod tests {
         run_for(&mut motion, &mut now, 500_000);
 
         motion.set_position_degrees(10.0);
-        assert_eq!(motion.state(), MotorState::IdleOn);
+        assert_eq!(motion.state(), MotorState::Idle);
         assert_eq!(motion.position_degrees(), 9.9);
         assert_eq!(motion.target_degrees(), 9.9);
         assert_eq!(run_for(&mut motion, &mut now, 500_000), 0);
@@ -634,13 +645,13 @@ mod tests {
             .add_path_segment(400, 200, PositionMode::Absolute)
             .unwrap();
         motion
-            .add_path_segment(-800, -300, PositionMode::Relative)
+            .add_path_segment(800, -300, PositionMode::Relative)
             .unwrap();
-        motion.set_state(MotorState::VelocityStep);
+        motion.set_state(MotorState::Path);
 
         // Out to 200...
         let mut peak = 0;
-        while motion.state() == MotorState::VelocityStep {
+        while motion.state() == MotorState::Path {
             run_for(&mut motion, &mut now, 1_000);
             peak = peak.max(position_steps(&motion));
             assert!(now < 5_000_000, "path did not finish");
@@ -652,7 +663,7 @@ mod tests {
         // ...and back 300, without overshooting either end.
         assert_eq!(peak, 200);
         assert_eq!(position_steps(&motion), -100);
-        assert_eq!(motion.state(), MotorState::IdleOn);
+        assert_eq!(motion.state(), MotorState::Idle);
         assert!(!motion.take_path_finished());
         assert_eq!(run_for(&mut motion, &mut now, 100_000), 0);
     }
@@ -666,7 +677,7 @@ mod tests {
                 .add_path_segment(400, 200, PositionMode::Relative)
                 .unwrap();
         }
-        motion.set_state(MotorState::VelocityStep);
+        motion.set_state(MotorState::Path);
 
         // 0.125 s to accelerate; from then on a steady 400 steps/s across
         // the segment boundaries at 200, 400 and 600.
@@ -686,7 +697,7 @@ mod tests {
         motion
             .add_path_segment(400, 400, PositionMode::Relative)
             .unwrap();
-        motion.set_state(MotorState::VelocityStep);
+        motion.set_state(MotorState::Path);
         run_for(&mut motion, &mut now, 500_000);
 
         motion
@@ -710,7 +721,7 @@ mod tests {
         motion
             .add_path_segment(400, 40, PositionMode::Relative)
             .unwrap();
-        motion.set_state(MotorState::VelocityStep);
+        motion.set_state(MotorState::Path);
         assert_eq!(run_for(&mut motion, &mut now, 1_000_000), 40);
         assert!(motion.take_path_finished());
     }
@@ -718,8 +729,8 @@ mod tests {
     #[test]
     fn an_empty_path_finishes_immediately() {
         let mut motion = Motion::new(TICK_HZ);
-        motion.set_state(MotorState::VelocityStep);
-        assert_eq!(motion.state(), MotorState::IdleOn);
+        motion.set_state(MotorState::Path);
+        assert_eq!(motion.state(), MotorState::Idle);
         assert!(motion.take_path_finished());
     }
 
@@ -746,7 +757,7 @@ mod tests {
             update_rate_hz: 100.0,
         };
         motion.set_home_direction(HomeDirection::Clockwise);
-        motion.set_state(MotorState::Home);
+        motion.set_state(MotorState::Homing);
         assert!(!motion.is_homed());
 
         // Coarse pass: 100 steps/s is 22.5 deg/s, clockwise is negative.
@@ -769,13 +780,13 @@ mod tests {
         assert!(run_for(&mut motion, &mut now, 100_000) < 0);
         motion.set_encoder_feedback(moving(-11.25));
         assert!(run_for(&mut motion, &mut now, 100_000) < 0);
-        assert_eq!(motion.state(), MotorState::Home);
+        assert_eq!(motion.state(), MotorState::Homing);
         // At most the one step that was already due is still taken.
         motion.set_encoder_feedback(moving(0.0));
         assert!(run_for(&mut motion, &mut now, 100_000) >= -1);
 
         assert!(motion.position_degrees() < position);
-        assert_eq!(motion.state(), MotorState::IdleOn);
+        assert_eq!(motion.state(), MotorState::Idle);
         assert!(motion.is_homed());
     }
 }

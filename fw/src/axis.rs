@@ -2,9 +2,9 @@
 
 use atsamd_hal::ehal::digital::StatefulOutputPin;
 use axis_core::eeprom::{Eeprom, EEPROM_SIZE};
-use axis_core::protocol::Rgb;
 use axis_core::selftest::{Check, Report};
 use axis_core::settings::{Settings, SettingsStore};
+use axis_core::types::Rgb;
 use core::fmt::Debug;
 use log::{error, info};
 
@@ -30,6 +30,9 @@ pub struct Axis {
     pub eeprom: Eeprom,
     pub settings: SettingsStore,
     pub mac_address: [u8; 6],
+    pub serial_number: [u8; 16],
+    /// Outcome of the power-on self test.
+    pub self_test: Report,
     /// `None` if the sensor failed the self test.
     encoder: Option<Encoder>,
     status_led: StatusLed,
@@ -76,10 +79,11 @@ impl Axis {
             );
         }
         // Informational only: nothing depends on the serial number.
-        match eeprom.serial_number(&mut i2c) {
-            Ok(serial) => info!("EEPROM: serial number {:02X?}", serial),
-            Err(error) => info!("EEPROM: serial number not read: {:?}", error),
-        }
+        let serial_number = eeprom.serial_number(&mut i2c).unwrap_or_else(|error| {
+            info!("EEPROM: serial number not read: {:?}", error);
+            [0; 16]
+        });
+        info!("EEPROM: serial number {:02X?}", serial_number);
         report.record(
             Check::Eeprom,
             passed(settings.as_ref().map(|_| ())) && passed(mac_address) && mac_is_valid,
@@ -101,6 +105,8 @@ impl Axis {
             eeprom,
             settings,
             mac_address,
+            serial_number,
+            self_test: report,
             encoder,
             status_led,
             last_heartbeat_ms: 0,
@@ -110,6 +116,27 @@ impl Axis {
     /// Whether the shaft encoder passed its self test and is in use.
     pub fn has_encoder(&self) -> bool {
         self.encoder.is_some()
+    }
+
+    /// Shaft position in degrees and velocity in degrees per second, if the
+    /// encoder is in use.
+    pub fn encoder_reading(&self) -> Option<(f32, f32)> {
+        self.encoder
+            .as_ref()
+            .map(|encoder| (encoder.position_degrees(), encoder.velocity_deg_per_s()))
+    }
+
+    /// Redefines the motor's current position, and the encoder's with it so
+    /// that the two keep the same zero. A moving motor is stopped dead.
+    pub fn set_position(&mut self, degrees: f64) {
+        let position = self.motor.motion(|motion| {
+            motion.set_position_degrees(degrees);
+            // Rounded to a whole step.
+            motion.position_degrees()
+        });
+        if let Some(encoder) = &mut self.encoder {
+            encoder.set_position_degrees(position as f32);
+        }
     }
 
     /// Runs the background work. Call continuously from the main loop.

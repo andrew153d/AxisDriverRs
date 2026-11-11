@@ -3,7 +3,7 @@
 use core::arch::asm;
 
 use atsamd_hal::pac;
-use axis_core::protocol::Rgb;
+use axis_core::types::Rgb;
 use cortex_m::peripheral::DWT;
 
 use crate::board::{PixelPin, CPU_HZ};

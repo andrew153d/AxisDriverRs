@@ -4,7 +4,7 @@
 //! has to be discarded before a reply can be read.
 
 use atsamd_hal::{ehal_nb::serial, nb};
-use axis_core::protocol::MotorBrake;
+use axis_core::types::MotorBrake;
 use log::{debug, info};
 use tmc2209::{
     data::{MicroStepResolution, StandstillMode},

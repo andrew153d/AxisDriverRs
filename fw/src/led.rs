@@ -1,7 +1,7 @@
 //! The addressable status pixel.
 
 use axis_core::led::{LedSequence, QueueFull};
-use axis_core::protocol::Rgb;
+use axis_core::types::Rgb;
 
 use crate::clock;
 use crate::ws2812::Ws2812;

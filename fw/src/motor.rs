@@ -9,7 +9,7 @@ use atsamd_hal::{
 };
 use axis_core::motion::{EncoderFeedback, Motion};
 use axis_core::profile::Direction;
-use axis_core::protocol::{MotorBrake, MotorState};
+use axis_core::types::{MotorBrake, MotorState};
 use cortex_m::interrupt::Mutex;
 use log::info;
 
@@ -211,8 +211,8 @@ impl Motor {
         // current so the motor runs cool between segments.
         let driver_result = match state {
             MotorState::Position | MotorState::Velocity => self.driver.set_run_current(100),
-            MotorState::VelocityStep => self.driver.set_currents(100, 0, 0),
-            MotorState::Off | MotorState::IdleOn | MotorState::Home => Ok(()),
+            MotorState::Path => self.driver.set_currents(100, 0, 0),
+            MotorState::Off | MotorState::Idle | MotorState::Homing => Ok(()),
         };
         self.motion(|motion| motion.set_state(state));
         driver_result
@@ -229,6 +229,13 @@ impl Motor {
     pub fn move_by(&mut self, degrees: f64) -> Result<(), tmc2209::Error> {
         let driver_result = self.driver.set_run_current(100);
         self.motion(|motion| motion.move_by_degrees(degrees));
+        driver_result
+    }
+
+    /// Accelerates to a constant velocity in steps per second.
+    pub fn set_velocity(&mut self, steps_per_s: f64) -> Result<(), tmc2209::Error> {
+        let driver_result = self.driver.set_run_current(100);
+        self.motion(|motion| motion.set_target_velocity(steps_per_s));
         driver_result
     }
 

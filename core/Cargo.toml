@@ -8,3 +8,7 @@ description = "Hardware-independent logic of the Axis Driver firmware"
 embedded-hal = "1.0.0"
 heapless = "0.8.0"
 libm = "0.2"
+micropb = { version = "0.7.0", features = ["container-heapless-0-8"] }
+
+[build-dependencies]
+micropb-gen = "0.7.0"

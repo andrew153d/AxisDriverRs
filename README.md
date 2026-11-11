@@ -1,21 +1,26 @@
 # Axis Driver firmware
 
 Rust firmware for the Axis Driver, a stepper driver board built around an
-ATSAMD51J19A, a TMC2209 and a TLV493D magnetic shaft encoder. It is a port of
-the original Arduino/PlatformIO firmware (the `AxisDriver` repository) and
-speaks the same host protocol, documented in that repository's
-`AxisProtocol.md`, so the existing Python library and web configurator keep
-working.
+ATSAMD51J19A, a TMC2209 and a TLV493D magnetic shaft encoder, together with
+the Python library for controlling it. It started as a port of the original
+Arduino/PlatformIO firmware (the `AxisDriver` repository) but has its own,
+Protocol Buffers based host protocol and is not compatible with that
+project's host software.
 
 ## Layout
 
-| Crate | Contents |
-| ----- | -------- |
-| [`core`](core) (`axis-core`) | Everything that does not touch the microcontroller: the wire protocol, the speed profile, the motor state machine, encoder filtering, settings, and drivers for the I2C devices. Unit-tested on the host. |
+| Path | Contents |
+| ---- | -------- |
+| [`proto/axis.proto`](proto/axis.proto) | The host protocol: every request and response, with their meaning and units. The Rust and Python message types are both generated from it. |
+| [`core`](core) (`axis-core`) | Everything that does not touch the microcontroller: message framing, the speed profile, the motor state machine, encoder filtering, settings, and drivers for the I2C devices. Unit-tested on the host. |
 | [`fw`](fw) | The firmware image: board setup, the step timer interrupt, the TMC2209 and WS2812 drivers, the USB serial port and command execution. |
+| [`python`](python) | The `axis` Python package: the `Axis` class, a small command line tool and an example. |
+| [`bootloader`](bootloader) | The board's USB bootloader image. |
 
-`fw/src/main.rs` lists the firmware modules; `core/src/protocol.rs` is the
-place to start for the message format.
+`fw/src/main.rs` lists the firmware modules.
+
+Building needs `protoc` on the `PATH`, as the Rust message types are
+generated at build time.
 
 ## Building and testing
 
@@ -65,27 +70,85 @@ just flash-bootloader
 
 `fw/memory.x` is sized for a SAMD51J19A (512 KiB flash, 192 KiB RAM).
 
-## Host tools
+## Protocol
 
-[`tools/`](tools) holds small Python scripts (they need `pyserial`) built on
-`tools/axis.py`, a minimal client for the protocol:
+The host sends `Request` messages and the device answers each with one
+`Response` carrying the same `id`, a status (`OK`, `ERROR` or `INVALID`) and
+the state the request concerns: for example, every motor command is answered
+with the full motor status. [`proto/axis.proto`](proto/axis.proto) is the
+reference.
+
+On the USB serial port each message travels in a frame: a little-endian
+`u16` payload length, the encoded message, and a little-endian
+CRC-16/CCITT-FALSE of the length and the payload.
+
+## Python
+
+`python/` holds the `axis` package. Set it up once with
 
 ```sh
-just move to 90          # go to 90 degrees
-just move by -45         # move relative to the last target
-just move spin 400 -t 3  # run at 400 steps/s for 3 seconds
-just move demo           # a short back-and-forth sequence
-just logs                # print the firmware's log
+just python-setup     # creates .venv and installs the package into it
 ```
 
-`move` switches the motor outputs off again when it is done, unless given
-`--hold`, and prints anything the firmware logged meanwhile.
+and control a board through the `Axis` class:
+
+```python
+from axis import Axis, PathSegment
+
+with Axis("/dev/ttyACM0") as axis:
+    print(axis.info().firmware_version, axis.state)
+
+    axis.max_speed = 1600                 # steps per second
+    axis.move_to(90, wait=True)           # degrees
+    axis.move_by(-45, wait=True)
+
+    axis.spin(400)                        # run at a constant velocity...
+    axis.stop()                           # ...and brake to a stop
+
+    axis.add_path([PathSegment(speed=600, steps=400),
+                   PathSegment(speed=200, steps=-400)])
+    axis.start_path(wait=True)
+
+    print(axis.position, axis.encoder_position)
+    axis.disable()                        # outputs off
+```
+
+Positions are in degrees; speeds are in steps per second, with 1600 steps to
+a revolution. Requests the device refuses raise `axis.CommandError`. The
+class also covers the status pixel, the stored configuration, homing and the
+firmware log; see its docstrings in
+[`python/axis/client.py`](python/axis/client.py).
+
+There is also a control panel, which shows the motor's state live and has
+controls for moving, jogging and spinning it, changing its limits, homing
+and reading the firmware log:
+
+```sh
+just ui
+```
+
+Escape stops the motor, and closing the window switches its outputs off. It
+needs Tk, which comes with most Python installations.
+
+For a quick look at a board from the terminal there are
+
+```sh
+just info      # identity, self test result, configuration
+just status    # state of the motor
+just logs      # the firmware's log
+just demo      # run the motor through a short sequence of moves
+```
+
+After changing `proto/axis.proto`, run `just proto` to regenerate
+`python/axis/axis_pb2.py`. It needs the Python `protobuf` package to be at
+least as new as `protoc`, which is why the package lives in its own
+environment.
 
 ## Logs
 
 The firmware logs through the `log` crate. Every message goes out over RTT,
-for an attached debugger, and into an 8 KiB buffer that the host can read
-back over USB:
+for an attached debugger, and into an 8 KiB buffer that the host reads back
+with the `GetLog` request:
 
 ```sh
 just logs            # print what has been logged since the last read
@@ -95,12 +158,6 @@ just logs --follow   # keep watching
 Reading empties the buffer. If it fills up before being read, the oldest
 lines are dropped and the gap is marked in the output. Each line starts with
 the time since boot in seconds.
-
-This uses a message that the original protocol does not have:
-
-| Type | Name | Request body | Reply |
-| ---- | ---- | ------------ | ----- |
-| `0x010A` | Get Log | empty | same type; body is up to 240 bytes of UTF-8 log text, empty when there is nothing left |
 
 ## Motion control
 
@@ -142,39 +199,38 @@ the USB port, the status LED and pixel themselves, and the user button. The
 supply voltage sense inputs are not read by this firmware yet. The motor is
 not moved.
 
-## Port status
+## Compared to the original firmware
 
-Ported: the complete serial protocol over USB (plus the Get Log message
-described above), position / velocity / path /
-homing motion, TMC2209 configuration, the shaft encoder, the status LEDs and
-settings storage in the EEPROM.
+Carried over: position, velocity, path and homing motion, TMC2209
+configuration, the shaft encoder, the status LEDs and settings storage in the
+EEPROM, in the layout the original firmware used.
 
-Not ported yet: the Ethernet HAT (UDP transport) and the Home Assistant MQTT
-integration. The Ethernet address and port settings are stored and reported,
-but nothing uses them.
+Not carried over: the Ethernet HAT (UDP transport) and the Home Assistant
+MQTT integration. The Ethernet address and port settings are stored and
+reported, but nothing uses them.
 
-Deliberate differences from the original firmware:
+Different:
 
-- Incoming messages are reassembled from the byte stream and their checksums
-  are verified. Unknown or malformed messages are answered with an
-  `INVALID_COMMAND` ACK; commands that fail (for example because the TMC2209
-  does not respond) with an `ERROR` ACK.
+- The host protocol is new, as described above. Messages are checked on
+  arrival: a request that cannot be decoded or holds an invalid value is
+  answered with `INVALID`, and one that fails (for example because the
+  TMC2209 does not respond) with `ERROR` and a line in the log.
 - Positions are reported with full microstep resolution (0.225°) instead of
   being rounded down to whole degrees.
-- "Get homed state" reports `1` once a homing sequence has completed.
-- "Get home direction" returns the value that was set.
+- The homed flag is set once a homing sequence has completed, and the homing
+  direction reads back as it was set.
 - The motor outputs stay disabled after power-up until the first motion
-  command, rather than being enabled while the state reads `OFF`.
+  command.
 - All motion is limited to the configured acceleration and maximum speed,
   not just position moves. A velocity command ramps to its speed, and a path
   ramps between segment speeds, carries speed across segments that continue
   in the same direction, and brakes to a stop at its end. A path whose
   speed changes are sharper than the acceleration setting allows will
   therefore lag its nominal timing; raise the acceleration to tighten it.
-- `IDLE_ON` brakes a moving motor to a stop instead of freezing it mid-step;
-  `OFF` and "set current position" still stop it dead.
+- Setting the `IDLE` state brakes a moving motor to a stop instead of
+  freezing it mid-step; `OFF` and redefining the position still stop it dead.
 - Path segments with zero speed or zero length are skipped instead of
   stalling the path.
-- Homing is refused with an `ERROR` ACK if the encoder failed its self test.
-- The queues for LED steps (32) and path segments (1024) are bounded; a
-  command that does not fit is answered with an `ERROR` ACK.
+- Homing is refused if the encoder failed its self test.
+- The queues for LED steps (32) and path segments (1024) are bounded;
+  a request that does not fit fails.

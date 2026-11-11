@@ -2,7 +2,7 @@
 
 use heapless::Deque;
 
-use crate::protocol::Rgb;
+use crate::types::Rgb;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LedStep {
