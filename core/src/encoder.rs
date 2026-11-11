@@ -126,6 +126,7 @@ impl ShaftTracker {
 
     pub fn feedback(&self) -> EncoderFeedback {
         EncoderFeedback {
+            position_degrees: self.position,
             velocity_deg_per_s: self.velocity,
             update_rate_hz: self.update_rate_hz,
         }

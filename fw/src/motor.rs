@@ -7,7 +7,7 @@ use atsamd_hal::{
     ehal::{delay::DelayNs, digital::OutputPin},
     pac::{self, interrupt},
 };
-use axis_core::motion::{EncoderFeedback, Motion};
+use axis_core::motion::{Correction, EncoderFeedback, Motion};
 use axis_core::profile::Direction;
 use axis_core::types::{MotorBrake, MotorState};
 use cortex_m::interrupt::Mutex;
@@ -253,7 +253,9 @@ impl Motor {
         self.driver.set_stallguard_threshold(threshold as u8)
     }
 
-    pub fn set_encoder_feedback(&mut self, feedback: EncoderFeedback) {
-        self.motion(|motion| motion.set_encoder_feedback(feedback));
+    /// Passes on a new encoder sample, and reports what closed loop control
+    /// made of it.
+    pub fn set_encoder_feedback(&mut self, feedback: EncoderFeedback) -> Option<Correction> {
+        self.motion(|motion| motion.set_encoder_feedback(feedback))
     }
 }

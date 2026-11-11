@@ -222,6 +222,9 @@ impl Axis {
         if settings.acceleration() == Some(&0) {
             return Err(invalid("acceleration must not be zero"));
         }
+        if settings.closed_loop() == Some(&true) && !self.has_encoder() {
+            return Err(failed("closed loop control needs the encoder"));
+        }
 
         self.motor.motion(|motion| {
             if let Some(&max_speed) = settings.max_speed() {
@@ -229,6 +232,9 @@ impl Axis {
             }
             if let Some(&acceleration) = settings.acceleration() {
                 motion.set_acceleration(acceleration);
+            }
+            if let Some(&closed_loop) = settings.closed_loop() {
+                motion.set_closed_loop(closed_loop);
             }
         });
         match brake {
@@ -296,13 +302,16 @@ impl Axis {
                 homed: motion.is_homed(),
                 path_queued: motion.path_queued() as u32,
                 path_free: motion.path_free() as u32,
+                stalled: motion.is_stalled(),
+                corrections: motion.corrections(),
                 ..Default::default()
             };
             status.set_motion(
                 MotionSettings::default()
                     .init_max_speed(motion.max_speed())
                     .init_acceleration(motion.acceleration())
-                    .init_brake(brake.into()),
+                    .init_brake(brake.into())
+                    .init_closed_loop(motion.closed_loop()),
             );
             status.set_homing(
                 HomingSettings::default()

@@ -6,7 +6,8 @@ use axis_core::selftest::{Check, Report};
 use axis_core::settings::{Settings, SettingsStore};
 use axis_core::types::Rgb;
 use core::fmt::Debug;
-use log::{error, info};
+use axis_core::motion::Correction;
+use log::{error, info, warn};
 
 use crate::board::{I2cBus, StatusLed};
 use crate::clock;
@@ -22,6 +23,8 @@ const PASS_COLOR: Rgb = Rgb::new(0x00, 0x30, 0x00);
 const FAIL_COLOR: Rgb = Rgb::new(0x60, 0x00, 0x00);
 /// Shown when a queued path has finished.
 const PATH_FINISHED_FLASH_MS: u32 = 500;
+/// Shown when closed loop control gives up on a blocked shaft.
+const STALLED_FLASH_MS: u32 = 1_000;
 
 pub struct Axis {
     pub motor: Motor,
@@ -99,6 +102,12 @@ impl Axis {
             .unwrap_or_else(|_| SettingsStore::unsaved(Settings::from_image([0xFF; EEPROM_SIZE])));
         let mac_address = mac_address.unwrap_or_default();
         let encoder = encoder.ok();
+        if encoder.is_some() {
+            motor.motion(|motion| motion.set_closed_loop(true));
+            info!("Closed loop control enabled");
+        } else {
+            info!("Closed loop control disabled: no encoder");
+        }
 
         Self {
             motor,
@@ -146,7 +155,16 @@ impl Axis {
     pub fn poll(&mut self) {
         if let Some(encoder) = &mut self.encoder {
             if let Some(feedback) = encoder.poll(&mut self.i2c) {
-                self.motor.set_encoder_feedback(feedback);
+                match self.motor.set_encoder_feedback(feedback) {
+                    Some(Correction::Recovered { steps }) => {
+                        warn!("Closed loop: made up for {} lost steps", steps);
+                    }
+                    Some(Correction::Stalled) => {
+                        error!("Closed loop: the shaft is blocked; motor stopped");
+                        self.pixel.flash(Rgb::RED, STALLED_FLASH_MS);
+                    }
+                    None => {}
+                }
             }
         }
 

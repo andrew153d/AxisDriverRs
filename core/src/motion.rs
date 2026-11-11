@@ -8,9 +8,29 @@
 //!
 //! All motion, in every mode, is limited to the configured maximum speed
 //! and acceleration.
+//!
+//! # Closed loop control
+//!
+//! The driver is told to step and the shaft normally follows, to within a
+//! fraction of a full step. When the load is too much for the motor the
+//! rotor drops out of step and comes to rest a whole number of electrical
+//! cycles (four full steps) away from where it was told to go; at speed it
+//! usually stalls altogether.
+//!
+//! With closed loop control enabled, every encoder sample is compared with
+//! the commanded position. Once the two are more than most of a cycle apart
+//! the motor is stopped, the shaft is given time to come to rest, the
+//! commanded position is corrected by the number of cycles that were lost,
+//! and the interrupted motion is taken up again from standstill. So moves
+//! end where they were told to, and a shaft that is forced away from where
+//! it is held comes back.
+//!
+//! Corrections are always whole cycles because the rotor cannot rest
+//! anywhere else, and because the stepping itself is more accurate than the
+//! magnetic encoder: smaller differences are left alone.
 
 use heapless::Deque;
-use libm::fabsf;
+use libm::{fabsf, roundf};
 
 use crate::profile::{Direction, Goal, Limits, Profile};
 use crate::types::{HomeDirection, MotorState, PositionMode};
@@ -35,6 +55,24 @@ pub const PATH_CAPACITY: usize = 1024;
 /// Distance to back off the end stop after the coarse homing pass.
 const HOMING_BACKOFF_STEPS: i32 = 50;
 
+/// Microsteps in one electrical cycle: four full steps. A rotor that drops
+/// out of step ends up a multiple of this away.
+const CYCLE_STEPS: i32 = STEPS_PER_REVOLUTION / 50;
+/// How far the shaft may be from the commanded position, in steps, before
+/// it counts as having lost steps. Less than a cycle, so that losing a
+/// single one is noticed, but well above what load, encoder error and
+/// noise add up to.
+const SLIP_DETECTION_STEPS: f32 = 0.75 * CYCLE_STEPS as f32;
+/// The shaft is at rest once it moves less than this many degrees between
+/// encoder samples, this many samples in a row.
+const REST_DEGREES: f32 = 0.3;
+const REST_SAMPLES: u8 = 5;
+/// Number of times in a row a motion is taken up again after losing steps.
+/// After that the shaft is taken to be blocked.
+const MAX_RETRIES: u8 = 3;
+/// Time without losing steps after which the retries start afresh.
+const RETRY_WINDOW_S: f32 = 2.0;
+
 pub fn degrees_to_steps(degrees: f64) -> i32 {
     (degrees / 360.0 * f64::from(STEPS_PER_REVOLUTION)) as i32
 }
@@ -53,9 +91,12 @@ pub struct Tick {
     pub wake_at: u32,
 }
 
-/// Shaft measurements the homing sequence relies on.
+/// Shaft measurements that homing and closed loop control rely on.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EncoderFeedback {
+    /// Multi-turn shaft position, counted from the same zero as the
+    /// commanded position.
+    pub position_degrees: f32,
     pub velocity_deg_per_s: f32,
     /// Encoder samples per second.
     pub update_rate_hz: f32,
@@ -128,6 +169,44 @@ impl Homing {
     }
 }
 
+/// What closed loop control did in response to an encoder sample.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Correction {
+    /// The shaft had lost this many steps; negative if it was ahead. The
+    /// commanded position has been corrected and the motion taken up again.
+    Recovered { steps: i32 },
+    /// The shaft kept losing steps and is taken to be blocked. The motor
+    /// has been stopped.
+    Stalled,
+}
+
+/// The motor has been stopped after losing steps, and is waiting for the
+/// shaft to come to rest so that it can tell how many.
+struct Recovery {
+    /// What to carry on with afterwards.
+    resume: Goal,
+    /// Whether to give up instead of carrying on.
+    give_up: bool,
+    /// Consecutive encoder samples without the shaft moving.
+    samples_at_rest: u8,
+}
+
+struct ClosedLoop {
+    enabled: bool,
+    /// Commanded position when the previous encoder sample arrived. Reading
+    /// the sensor starts its next measurement, so this is where the shaft
+    /// was meant to be when the latest sample was measured.
+    sampled_position: i32,
+    recovery: Option<Recovery>,
+    /// Recoveries since the shaft last followed for [`RETRY_WINDOW_S`].
+    retries: u8,
+    /// Encoder samples since steps were last lost.
+    samples_in_step: u32,
+    stalled: bool,
+    /// Number of times lost steps have been corrected.
+    corrections: u32,
+}
+
 pub struct Motion {
     profile: Profile,
     /// Timer ticks between supervision runs.
@@ -145,6 +224,7 @@ pub struct Motion {
     path_finished: bool,
     homing: Homing,
     encoder: EncoderFeedback,
+    closed_loop: ClosedLoop,
 }
 
 impl Motion {
@@ -171,6 +251,15 @@ impl Motion {
                 homed: false,
             },
             encoder: EncoderFeedback::default(),
+            closed_loop: ClosedLoop {
+                enabled: false,
+                sampled_position: 0,
+                recovery: None,
+                retries: 0,
+                samples_in_step: 0,
+                stalled: false,
+                corrections: 0,
+            },
         }
     }
 
@@ -200,6 +289,15 @@ impl Motion {
     }
 
     pub fn set_state(&mut self, state: MotorState) {
+        if self.state == MotorState::Homing && state != MotorState::Homing {
+            // Pushing against the end stop loses steps on purpose.
+            self.adopt_shaft_position();
+        }
+        // A new command gets a fresh start.
+        self.closed_loop.recovery = None;
+        self.closed_loop.retries = 0;
+        self.closed_loop.stalled = false;
+
         match state {
             // Cutting the power stops the motor whatever the profile says.
             MotorState::Off => self.profile.halt(),
@@ -227,6 +325,10 @@ impl Motion {
 
     /// Moves the multi-stage modes along.
     fn supervise(&mut self) {
+        if self.closed_loop.recovery.is_some() {
+            // Standing still on purpose, not because the mode is done.
+            return;
+        }
         match self.state {
             MotorState::Off | MotorState::Idle | MotorState::Velocity => {}
             MotorState::Position => {
@@ -325,6 +427,8 @@ impl Motion {
                     self.profile.halt();
                     self.homing.homed = true;
                     self.state = MotorState::Idle;
+                    // Pushing against the end stop loses steps on purpose.
+                    self.adopt_shaft_position();
                 }
             }
         }
@@ -342,8 +446,147 @@ impl Motion {
         self.homing.reached_speed && !moving
     }
 
-    pub fn set_encoder_feedback(&mut self, feedback: EncoderFeedback) {
+    /// Takes in a new encoder sample, and with closed loop control enabled
+    /// acts on it. Call once for every sample, as soon as it has been read.
+    pub fn set_encoder_feedback(&mut self, feedback: EncoderFeedback) -> Option<Correction> {
+        let shaft_travel = fabsf(feedback.position_degrees - self.encoder.position_degrees);
         self.encoder = feedback;
+        let position = self.profile.position();
+        let sampled_position = core::mem::replace(&mut self.closed_loop.sampled_position, position);
+        if !self.closed_loop.enabled || self.state == MotorState::Homing {
+            return None;
+        }
+
+        if let Some(recovery) = &mut self.closed_loop.recovery {
+            if shaft_travel < REST_DEGREES {
+                recovery.samples_at_rest += 1;
+            } else {
+                recovery.samples_at_rest = 0;
+            }
+            return if recovery.samples_at_rest >= REST_SAMPLES {
+                self.finish_recovery()
+            } else {
+                None
+            };
+        }
+
+        // The sample may be up to one more sample period old than assumed.
+        let sample_rate = feedback.update_rate_hz.max(1.0);
+        let timing_allowance = fabsf(self.profile.velocity()) / sample_rate;
+        let error = self.steps_ahead_of_shaft(sampled_position);
+        if fabsf(error) > SLIP_DETECTION_STEPS + timing_allowance {
+            self.start_recovery();
+        } else {
+            self.closed_loop.samples_in_step += 1;
+            if self.closed_loop.samples_in_step as f32 >= RETRY_WINDOW_S * sample_rate {
+                self.closed_loop.retries = 0;
+            }
+        }
+        None
+    }
+
+    /// How many steps `position` is ahead of where the encoder last saw the
+    /// shaft.
+    fn steps_ahead_of_shaft(&self, position: i32) -> f32 {
+        let shaft =
+            f64::from(self.encoder.position_degrees) / 360.0 * f64::from(STEPS_PER_REVOLUTION);
+        (f64::from(position) - shaft) as f32
+    }
+
+    /// Stops stepping until the shaft has come to rest.
+    fn start_recovery(&mut self) {
+        let resume = match self.state {
+            // The shaft is free to turn; just keep track of it.
+            MotorState::Off => Goal::Stop,
+            // Holding position: go back to it.
+            MotorState::Idle if self.profile.is_stopped() => Goal::stop_at(self.profile.position()),
+            _ => self.profile.goal(),
+        };
+        let mut give_up = false;
+        if self.state != MotorState::Off {
+            self.closed_loop.retries += 1;
+            give_up = self.closed_loop.retries > MAX_RETRIES;
+        }
+        // A rotor that is out of step cannot be braked, or picked up again
+        // at speed.
+        self.profile.halt();
+        self.closed_loop.samples_in_step = 0;
+        self.closed_loop.recovery = Some(Recovery {
+            resume,
+            give_up,
+            samples_at_rest: 0,
+        });
+    }
+
+    /// Corrects the commanded position now that the shaft is at rest, and
+    /// carries on with what was interrupted.
+    fn finish_recovery(&mut self) -> Option<Correction> {
+        let recovery = self.closed_loop.recovery.take()?;
+        let steps = self.adopt_shaft_position();
+        if recovery.give_up {
+            self.state = MotorState::Idle;
+            self.segment = None;
+            self.closed_loop.stalled = true;
+            return Some(Correction::Stalled);
+        }
+        self.profile.set_goal(recovery.resume, self.now);
+        self.supervise();
+        // The shaft was merely slow to follow if there is nothing to correct.
+        (steps != 0).then_some(Correction::Recovered { steps })
+    }
+
+    /// Corrects the commanded position by the whole electrical cycles the
+    /// shaft has fallen behind, and returns that distance in steps. Only
+    /// meaningful while neither the motor nor the shaft is moving much.
+    fn adopt_shaft_position(&mut self) -> i32 {
+        if !self.closed_loop.enabled {
+            return 0;
+        }
+        let position = self.profile.position();
+        let cycles = roundf(self.steps_ahead_of_shaft(position) / CYCLE_STEPS as f32) as i32;
+        let lost = cycles * CYCLE_STEPS;
+        self.profile.set_position(position.wrapping_sub(lost));
+        self.closed_loop.sampled_position = self.profile.position();
+        if lost != 0 {
+            self.closed_loop.corrections = self.closed_loop.corrections.wrapping_add(1);
+        }
+        lost
+    }
+
+    /// Whether the encoder is used to notice and make up for lost steps.
+    pub fn closed_loop(&self) -> bool {
+        self.closed_loop.enabled
+    }
+
+    /// Switches closed loop control on or off. Switching it on takes the
+    /// shaft to be where it should be, give or take the cycles it has
+    /// already lost, so nothing moves. Only enable it with a working
+    /// encoder.
+    pub fn set_closed_loop(&mut self, enabled: bool) {
+        if enabled == self.closed_loop.enabled {
+            return;
+        }
+        self.closed_loop.enabled = enabled;
+        self.closed_loop.retries = 0;
+        self.closed_loop.stalled = false;
+        if enabled {
+            self.adopt_shaft_position();
+        } else if let Some(recovery) = self.closed_loop.recovery.take() {
+            if !recovery.give_up {
+                self.profile.set_goal(recovery.resume, self.now);
+            }
+        }
+    }
+
+    /// Whether closed loop control gave up on a blocked shaft. Cleared by
+    /// the next change of state.
+    pub fn is_stalled(&self) -> bool {
+        self.closed_loop.stalled
+    }
+
+    /// Number of times closed loop control has corrected lost steps.
+    pub fn corrections(&self) -> u32 {
+        self.closed_loop.corrections
     }
 
     /// Steps per second.
@@ -391,6 +634,10 @@ impl Motion {
         self.profile.halt();
         self.target = degrees_to_steps(degrees);
         self.profile.set_position(self.target);
+        self.closed_loop.sampled_position = self.target;
+        self.closed_loop.recovery = None;
+        self.closed_loop.retries = 0;
+        self.closed_loop.stalled = false;
         self.segment = None;
         if self.state != MotorState::Off {
             self.state = MotorState::Idle;
@@ -753,6 +1000,7 @@ mod tests {
         let mut motion = Motion::new(TICK_HZ);
         let mut now = 0;
         let moving = |velocity_deg_per_s| EncoderFeedback {
+            position_degrees: 0.0,
             velocity_deg_per_s,
             update_rate_hz: 100.0,
         };
@@ -788,5 +1036,302 @@ mod tests {
         assert!(motion.position_degrees() < position);
         assert_eq!(motion.state(), MotorState::Idle);
         assert!(motion.is_homed());
+    }
+
+    /// Encoder sample period of the rig, in ticks.
+    const SAMPLE_TICKS: u32 = 10_000;
+
+    /// A motor with a shaft and an encoder on it.
+    struct Rig {
+        motion: Motion,
+        now: u32,
+        /// Where the shaft is, in steps.
+        shaft: i32,
+        /// Whether the shaft is held so that the motor cannot turn it.
+        blocked: bool,
+        /// The measurement in progress: like the sensor's, it is read out
+        /// one sample period after it was taken.
+        measuring: i32,
+        events: Vec<Correction>,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let mut motion = Motion::new(TICK_HZ);
+            motion.set_closed_loop(true);
+            Self {
+                motion,
+                now: 0,
+                shaft: 0,
+                blocked: false,
+                measuring: 0,
+                events: Vec::new(),
+            }
+        }
+
+        /// Runs the motor and the encoder, returning the steps issued.
+        fn run(&mut self, duration: u32) -> i32 {
+            let mut steps = 0;
+            for _ in 0..duration / SAMPLE_TICKS {
+                let taken = run_for(&mut self.motion, &mut self.now, SAMPLE_TICKS);
+                steps += taken;
+                if !self.blocked {
+                    self.shaft += taken;
+                }
+                let feedback = EncoderFeedback {
+                    position_degrees: steps_to_degrees(self.measuring) as f32,
+                    velocity_deg_per_s: 0.0,
+                    update_rate_hz: 100.0,
+                };
+                self.measuring = self.shaft;
+                self.events.extend(self.motion.set_encoder_feedback(feedback));
+            }
+            steps
+        }
+
+        /// Lets go of a blocked shaft, which drops into the nearest place
+        /// the rotor can rest.
+        fn release(&mut self) {
+            self.blocked = false;
+            let behind = position_steps(&self.motion) - self.shaft;
+            let cycles = (behind as f32 / CYCLE_STEPS as f32).round() as i32;
+            self.shaft = position_steps(&self.motion) - cycles * CYCLE_STEPS;
+        }
+    }
+
+    #[test]
+    fn open_loop_does_not_notice_lost_steps() {
+        let mut rig = Rig::new();
+        rig.motion.set_closed_loop(false);
+        rig.motion.move_to_degrees(90.0);
+        rig.run(300_000);
+        rig.shaft -= 2 * CYCLE_STEPS;
+        rig.run(2_000_000);
+
+        assert_eq!(rig.motion.position_degrees(), 90.0);
+        assert_eq!(rig.shaft, 400 - 2 * CYCLE_STEPS);
+        assert_eq!(rig.events, []);
+    }
+
+    #[test]
+    fn closed_loop_leaves_a_shaft_that_follows_alone() {
+        let mut rig = Rig::new();
+        rig.motion.set_max_speed(8_000);
+        rig.motion.set_acceleration(40_000);
+        rig.motion.move_to_degrees(3_600.0);
+        // The encoder is a few steps out and the shaft lags a little.
+        rig.shaft = -10;
+        rig.measuring = -10;
+
+        // 1.6 s to accelerate and brake, 1.8 s at full speed.
+        assert_eq!(rig.run(2_200_000), 16_000);
+        assert_eq!(rig.motion.state(), MotorState::Idle);
+        assert_eq!(rig.motion.position_degrees(), 3_600.0);
+        assert_eq!(rig.events, []);
+        assert_eq!(rig.motion.corrections(), 0);
+    }
+
+    #[test]
+    fn a_move_makes_up_for_lost_steps() {
+        let mut rig = Rig::new();
+        rig.motion.move_to_degrees(360.0);
+        rig.run(1_000_000);
+        rig.shaft -= 3 * CYCLE_STEPS;
+        rig.run(3_000_000);
+
+        assert_eq!(
+            rig.events,
+            [Correction::Recovered {
+                steps: 3 * CYCLE_STEPS
+            }]
+        );
+        assert_eq!(rig.shaft, 1600);
+        assert_eq!(rig.motion.position_degrees(), 360.0);
+        assert_eq!(rig.motion.state(), MotorState::Idle);
+        assert_eq!(rig.motion.corrections(), 1);
+        assert!(!rig.motion.is_stalled());
+    }
+
+    #[test]
+    fn a_stalled_move_starts_again_from_standstill() {
+        let mut rig = Rig::new();
+        rig.motion.move_to_degrees(360.0);
+        rig.run(500_000);
+        rig.blocked = true;
+        rig.run(100_000);
+        // Stopped, rather than stepping on against the stall.
+        assert_eq!(rig.run(30_000), 0);
+        assert_eq!(rig.motion.velocity(), 0.0);
+        assert_eq!(rig.motion.state(), MotorState::Position);
+
+        rig.release();
+        rig.run(3_000_000);
+        assert_eq!(rig.shaft, 1600);
+        assert_eq!(rig.motion.state(), MotorState::Idle);
+        assert!(!rig.motion.is_stalled());
+    }
+
+    #[test]
+    fn holds_position_against_being_forced_away() {
+        let mut rig = Rig::new();
+        rig.motion.move_to_degrees(90.0);
+        rig.run(2_000_000);
+        assert_eq!(rig.motion.state(), MotorState::Idle);
+
+        rig.shaft += 5 * CYCLE_STEPS;
+        assert_eq!(rig.run(1_000_000), -5 * CYCLE_STEPS);
+        assert_eq!(rig.shaft, 400);
+        assert_eq!(rig.motion.position_degrees(), 90.0);
+        assert_eq!(rig.motion.state(), MotorState::Idle);
+        assert_eq!(
+            rig.events,
+            [Correction::Recovered {
+                steps: -5 * CYCLE_STEPS
+            }]
+        );
+    }
+
+    #[test]
+    fn differences_smaller_than_half_a_cycle_are_not_corrected() {
+        let mut rig = Rig::new();
+        rig.motion.set_state(MotorState::Idle);
+        rig.shaft = CYCLE_STEPS / 2 - 2;
+        assert_eq!(rig.run(1_000_000), 0);
+        assert_eq!(rig.motion.position_degrees(), 0.0);
+        assert_eq!(rig.events, []);
+    }
+
+    #[test]
+    fn velocity_mode_picks_up_speed_again_after_a_stall() {
+        let mut rig = Rig::new();
+        rig.motion.set_target_velocity(800.0);
+        rig.run(1_000_000);
+        rig.blocked = true;
+        rig.run(200_000);
+        rig.release();
+        rig.run(1_000_000);
+
+        assert_eq!(rig.motion.state(), MotorState::Velocity);
+        let steps = rig.run(1_000_000);
+        assert!((799..=801).contains(&steps), "{steps} steps");
+        // The commanded position has been brought back to the shaft.
+        assert_eq!(position_steps(&rig.motion), rig.shaft);
+        assert_eq!(rig.motion.corrections(), 1);
+    }
+
+    #[test]
+    fn a_path_carries_on_to_its_end_after_lost_steps() {
+        let mut rig = Rig::new();
+        for _ in 0..2 {
+            rig.motion
+                .add_path_segment(400, 400, PositionMode::Relative)
+                .unwrap();
+        }
+        rig.motion.set_state(MotorState::Path);
+        rig.run(500_000);
+        rig.shaft -= CYCLE_STEPS;
+        rig.run(4_000_000);
+
+        assert_eq!(rig.shaft, 800);
+        assert_eq!(position_steps(&rig.motion), 800);
+        assert!(rig.motion.take_path_finished());
+        assert_eq!(rig.motion.state(), MotorState::Idle);
+    }
+
+    #[test]
+    fn gives_up_on_a_blocked_shaft() {
+        let mut rig = Rig::new();
+        rig.motion.move_to_degrees(360.0);
+        rig.blocked = true;
+        rig.run(3_000_000);
+
+        assert_eq!(rig.events.last(), Some(&Correction::Stalled));
+        assert_eq!(rig.events.len(), 1 + MAX_RETRIES as usize);
+        assert!(rig.motion.is_stalled());
+        assert_eq!(rig.motion.state(), MotorState::Idle);
+        // The commanded position is where the shaft is, to within the
+        // half cycle a held rotor can be off by, not where the motor tried
+        // to go; and nothing more is attempted.
+        assert!(position_steps(&rig.motion).abs() <= CYCLE_STEPS / 2);
+        assert_eq!(rig.run(1_000_000), 0);
+
+        // The next command tries again.
+        rig.release();
+        rig.motion.move_to_degrees(360.0);
+        assert!(!rig.motion.is_stalled());
+        rig.run(3_000_000);
+        assert_eq!(rig.shaft, 1600);
+    }
+
+    #[test]
+    fn follows_the_shaft_while_switched_off() {
+        let mut rig = Rig::new();
+        rig.shaft = 10 * CYCLE_STEPS + 3;
+        assert_eq!(rig.run(1_000_000), 0);
+        assert_eq!(rig.motion.state(), MotorState::Off);
+        assert_eq!(position_steps(&rig.motion), 10 * CYCLE_STEPS);
+
+        // Turning it by hand any number of times is not a stall.
+        for turn in 0..10 {
+            rig.shaft = turn * CYCLE_STEPS;
+            rig.run(200_000);
+        }
+        assert!(!rig.motion.is_stalled());
+
+        // Switching on holds the shaft where it is.
+        rig.motion.set_state(MotorState::Idle);
+        assert_eq!(rig.run(1_000_000), 0);
+        assert_eq!(position_steps(&rig.motion), 9 * CYCLE_STEPS);
+    }
+
+    #[test]
+    fn enabling_closed_loop_does_not_move_the_motor() {
+        let mut rig = Rig::new();
+        rig.motion.set_closed_loop(false);
+        rig.motion.set_state(MotorState::Idle);
+        rig.shaft = -4 * CYCLE_STEPS;
+        rig.run(100_000);
+
+        rig.motion.set_closed_loop(true);
+        assert!(rig.motion.closed_loop());
+        assert_eq!(position_steps(&rig.motion), -4 * CYCLE_STEPS);
+        assert_eq!(rig.run(1_000_000), 0);
+        assert_eq!(rig.events, []);
+    }
+
+    #[test]
+    fn homing_leaves_the_position_where_the_shaft_is() {
+        let mut rig = Rig::new();
+        let feedback = |shaft: i32, velocity_deg_per_s| EncoderFeedback {
+            position_degrees: steps_to_degrees(shaft) as f32,
+            velocity_deg_per_s,
+            update_rate_hz: 100.0,
+        };
+        rig.motion.set_home_direction(HomeDirection::Clockwise);
+        rig.motion.set_state(MotorState::Homing);
+
+        // The shaft gets 20 steps towards the end stop and no further,
+        // whatever the motor does.
+        let (motion, now) = (&mut rig.motion, &mut rig.now);
+        motion.set_encoder_feedback(feedback(-10, -22.5));
+        run_for(motion, now, 500_000);
+        motion.set_encoder_feedback(feedback(-20, 5.0));
+        run_for(motion, now, 1_000_000);
+        motion.set_encoder_feedback(feedback(30, 0.0));
+        run_for(motion, now, 100_000);
+        motion.set_encoder_feedback(feedback(0, -11.25));
+        run_for(motion, now, 2_000_000);
+        assert_eq!(motion.state(), MotorState::Homing);
+        motion.set_encoder_feedback(feedback(-20, 0.0));
+        run_for(motion, now, 100_000);
+
+        assert!(motion.is_homed());
+        assert_eq!(motion.state(), MotorState::Idle);
+        // Within half a cycle of the shaft, and it stays there.
+        assert!((position_steps(motion) + 20).abs() <= CYCLE_STEPS / 2);
+        rig.shaft = -20;
+        rig.measuring = -20;
+        assert_eq!(rig.run(1_000_000), 0);
+        assert_eq!(rig.events, []);
     }
 }

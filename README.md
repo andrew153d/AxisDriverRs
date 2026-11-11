@@ -224,8 +224,43 @@ on its target without creeping.
 Limitations: the step pulse is produced by the interrupt handler rather than
 by a timer output, so pulses jitter by the interrupt latency (worst when the
 status pixel is being written, about 40 us); the profile is trapezoidal, with
-no jerk limiting; and control is open loop, with the encoder used only to
-detect the stall during homing.
+no jerk limiting.
+
+### Closed loop control
+
+The driver is told to step and the shaft normally follows. When the load is
+too much for the motor, the rotor drops out of step and ends up a whole
+number of electrical cycles (four full steps, 7.2°) away from where it was
+told to go, or stalls altogether. With closed loop control on, the firmware
+compares every encoder sample (100 per second) with the commanded position
+as it was when the sample was measured. Once the two are more than three
+quarters of a cycle apart, plus an allowance that grows with speed, it:
+
+1. stops stepping, since a rotor that is out of step can be neither braked
+   nor picked up again at speed;
+2. waits for the shaft to come to rest;
+3. corrects the commanded position by the number of cycles that were lost;
+4. takes up the interrupted motion again from standstill.
+
+So a position move or a path ends where it was told to, a velocity gets back
+up to speed, and a shaft that is forced away from where it is being held
+comes back. With the outputs off, the commanded position follows the shaft
+as it is turned by hand. If steps are lost four times within two seconds the
+shaft is taken to be blocked: the motor stops in the `IDLE` state, the status
+reports `stalled`, and the pixel flashes red. The next motion command tries
+again.
+
+Corrections are whole cycles because the rotor cannot rest anywhere else,
+and because the stepping is more accurate than the magnetic encoder; smaller
+differences are left alone. Closed loop control is on at power-up if the
+encoder passed the self test, and can be switched with the `closed_loop`
+motion setting (`axis.closed_loop = False`, or the button in the control
+panel). It is suspended during homing, which stalls the motor on purpose;
+when homing ends, the commanded position is corrected to where the shaft is.
+
+The encoder's multi-turn position is a 32 bit float, which gets too coarse
+for this after some tens of thousands of revolutions from zero; redefine the
+position (`set_position`) before then on an axis that turns continuously.
 
 ## Power-on self test
 

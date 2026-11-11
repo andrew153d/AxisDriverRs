@@ -248,7 +248,7 @@ class LedStep(_message.Message):
     def __init__(self, color: _Optional[_Union[Color, _Mapping]] = ..., duration_ms: _Optional[int] = ...) -> None: ...
 
 class Motor(_message.Message):
-    __slots__ = ("state", "position", "target", "velocity", "target_velocity", "motion", "homing", "homed", "path_queued", "path_free", "encoder")
+    __slots__ = ("state", "position", "target", "velocity", "target_velocity", "motion", "homing", "homed", "path_queued", "path_free", "encoder", "stalled", "corrections")
     STATE_FIELD_NUMBER: _ClassVar[int]
     POSITION_FIELD_NUMBER: _ClassVar[int]
     TARGET_FIELD_NUMBER: _ClassVar[int]
@@ -260,6 +260,8 @@ class Motor(_message.Message):
     PATH_QUEUED_FIELD_NUMBER: _ClassVar[int]
     PATH_FREE_FIELD_NUMBER: _ClassVar[int]
     ENCODER_FIELD_NUMBER: _ClassVar[int]
+    STALLED_FIELD_NUMBER: _ClassVar[int]
+    CORRECTIONS_FIELD_NUMBER: _ClassVar[int]
     state: MotorState
     position: float
     target: float
@@ -271,7 +273,9 @@ class Motor(_message.Message):
     path_queued: int
     path_free: int
     encoder: Encoder
-    def __init__(self, state: _Optional[_Union[MotorState, str]] = ..., position: _Optional[float] = ..., target: _Optional[float] = ..., velocity: _Optional[float] = ..., target_velocity: _Optional[float] = ..., motion: _Optional[_Union[MotionSettings, _Mapping]] = ..., homing: _Optional[_Union[HomingSettings, _Mapping]] = ..., homed: bool = ..., path_queued: _Optional[int] = ..., path_free: _Optional[int] = ..., encoder: _Optional[_Union[Encoder, _Mapping]] = ...) -> None: ...
+    stalled: bool
+    corrections: int
+    def __init__(self, state: _Optional[_Union[MotorState, str]] = ..., position: _Optional[float] = ..., target: _Optional[float] = ..., velocity: _Optional[float] = ..., target_velocity: _Optional[float] = ..., motion: _Optional[_Union[MotionSettings, _Mapping]] = ..., homing: _Optional[_Union[HomingSettings, _Mapping]] = ..., homed: bool = ..., path_queued: _Optional[int] = ..., path_free: _Optional[int] = ..., encoder: _Optional[_Union[Encoder, _Mapping]] = ..., stalled: bool = ..., corrections: _Optional[int] = ...) -> None: ...
 
 class Encoder(_message.Message):
     __slots__ = ("position", "velocity")
@@ -282,14 +286,16 @@ class Encoder(_message.Message):
     def __init__(self, position: _Optional[float] = ..., velocity: _Optional[float] = ...) -> None: ...
 
 class MotionSettings(_message.Message):
-    __slots__ = ("max_speed", "acceleration", "brake")
+    __slots__ = ("max_speed", "acceleration", "brake", "closed_loop")
     MAX_SPEED_FIELD_NUMBER: _ClassVar[int]
     ACCELERATION_FIELD_NUMBER: _ClassVar[int]
     BRAKE_FIELD_NUMBER: _ClassVar[int]
+    CLOSED_LOOP_FIELD_NUMBER: _ClassVar[int]
     max_speed: int
     acceleration: int
     brake: Brake
-    def __init__(self, max_speed: _Optional[int] = ..., acceleration: _Optional[int] = ..., brake: _Optional[_Union[Brake, str]] = ...) -> None: ...
+    closed_loop: bool
+    def __init__(self, max_speed: _Optional[int] = ..., acceleration: _Optional[int] = ..., brake: _Optional[_Union[Brake, str]] = ..., closed_loop: bool = ...) -> None: ...
 
 class HomingSettings(_message.Message):
     __slots__ = ("direction", "speed", "threshold")
