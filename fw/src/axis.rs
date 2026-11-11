@@ -1,0 +1,163 @@
+//! The device as a whole: everything a host command can act on.
+
+use atsamd_hal::ehal::digital::StatefulOutputPin;
+use axis_core::eeprom::{Eeprom, EEPROM_SIZE};
+use axis_core::protocol::Rgb;
+use axis_core::selftest::{Check, Report};
+use axis_core::settings::{Settings, SettingsStore};
+use core::fmt::Debug;
+use log::{error, info};
+
+use crate::board::{I2cBus, StatusLed};
+use crate::clock;
+use crate::encoder::Encoder;
+use crate::led::StatusPixel;
+use crate::motor::Motor;
+
+const HEARTBEAT_PERIOD_MS: u32 = 1_000;
+/// The self test result is shown as one flash per check, green or red.
+const SELF_TEST_FLASH_MS: u32 = 250;
+const SELF_TEST_GAP_MS: u32 = 150;
+const PASS_COLOR: Rgb = Rgb::new(0x00, 0x30, 0x00);
+const FAIL_COLOR: Rgb = Rgb::new(0x60, 0x00, 0x00);
+/// Shown when a queued path has finished.
+const PATH_FINISHED_FLASH_MS: u32 = 500;
+
+pub struct Axis {
+    pub motor: Motor,
+    pub pixel: StatusPixel,
+    pub i2c: I2cBus,
+    pub eeprom: Eeprom,
+    pub settings: SettingsStore,
+    pub mac_address: [u8; 6],
+    /// `None` if the sensor failed the self test.
+    encoder: Option<Encoder>,
+    status_led: StatusLed,
+    last_heartbeat_ms: u32,
+}
+
+impl Axis {
+    /// Brings up the devices on the I2C bus and runs the power-on self
+    /// test.
+    pub fn start(
+        mut motor: Motor,
+        mut pixel: StatusPixel,
+        mut i2c: I2cBus,
+        status_led: StatusLed,
+    ) -> Self {
+        let mut report = Report::new();
+        info!("Self test starting");
+
+        report.record(Check::StepTimer, passed(motor.check_step_timer()));
+        report.record(Check::MotorDriver, passed(motor.check_driver()));
+
+        let encoder = Encoder::start(&mut i2c);
+        report.record(Check::Encoder, passed(encoder.as_ref().map(|_| ())));
+
+        let mut eeprom = Eeprom::new();
+        let settings = SettingsStore::load(&mut eeprom, &mut i2c);
+        if let Ok(settings) = &settings {
+            let settings = settings.settings();
+            info!(
+                "EEPROM: settings read; Ethernet address {:#010x} port {}, I2C address {:#04x}",
+                settings.ethernet_address(),
+                settings.ethernet_port(),
+                settings.i2c_address()
+            );
+        }
+        let mac_address = eeprom.mac_address(&mut i2c);
+        // An erased or absent identity chip reads as all ones or all zeros.
+        let mac_is_valid = mac_address.is_ok_and(|mac| mac != [0x00; 6] && mac != [0xFF; 6]);
+        if let Ok(mac) = mac_address {
+            info!(
+                "EEPROM: MAC address {:02X?} ({})",
+                mac,
+                if mac_is_valid { "valid" } else { "blank" }
+            );
+        }
+        // Informational only: nothing depends on the serial number.
+        match eeprom.serial_number(&mut i2c) {
+            Ok(serial) => info!("EEPROM: serial number {:02X?}", serial),
+            Err(error) => info!("EEPROM: serial number not read: {:?}", error),
+        }
+        report.record(
+            Check::Eeprom,
+            passed(settings.as_ref().map(|_| ())) && passed(mac_address) && mac_is_valid,
+        );
+
+        show_report(&report, &mut pixel);
+
+        // Carry on with whatever works, so that the board can still be
+        // talked to and diagnosed.
+        let settings = settings
+            .unwrap_or_else(|_| SettingsStore::unsaved(Settings::from_image([0xFF; EEPROM_SIZE])));
+        let mac_address = mac_address.unwrap_or_default();
+        let encoder = encoder.ok();
+
+        Self {
+            motor,
+            pixel,
+            i2c,
+            eeprom,
+            settings,
+            mac_address,
+            encoder,
+            status_led,
+            last_heartbeat_ms: 0,
+        }
+    }
+
+    /// Runs the background work. Call continuously from the main loop.
+    pub fn poll(&mut self) {
+        if let Some(encoder) = &mut self.encoder {
+            if let Some(feedback) = encoder.poll(&mut self.i2c) {
+                self.motor.set_encoder_feedback(feedback);
+            }
+        }
+
+        if self.motor.motion(|motion| motion.take_path_finished()) {
+            self.pixel.flash(Rgb::PURPLE, PATH_FINISHED_FLASH_MS);
+        }
+        self.pixel.poll();
+
+        if clock::every(HEARTBEAT_PERIOD_MS, &mut self.last_heartbeat_ms) {
+            let _ = self.status_led.toggle();
+        }
+    }
+}
+
+/// Logs why a check failed and reduces its outcome to pass or fail.
+fn passed<T>(result: Result<T, impl Debug>) -> bool {
+    match result {
+        Ok(_) => true,
+        Err(fault) => {
+            error!("Self test fault: {:?}", fault);
+            false
+        }
+    }
+}
+
+/// Logs the self test report and queues it on the status pixel.
+fn show_report(report: &Report, pixel: &mut StatusPixel) {
+    for (check, passed) in report.results() {
+        info!(
+            "Self test {:?}: {}",
+            check,
+            if passed { "pass" } else { "FAIL" }
+        );
+        let color = if passed { PASS_COLOR } else { FAIL_COLOR };
+        // The queue is empty at start-up, so these always fit.
+        let _ = pixel.push(color, SELF_TEST_FLASH_MS);
+        let _ = pixel.push(Rgb::BLACK, SELF_TEST_GAP_MS);
+    }
+    if report.all_passed() {
+        info!("Self test passed");
+    } else {
+        let failed = report.results().filter(|&(_, passed)| !passed).count();
+        error!(
+            "Self test failed: {} of {} checks",
+            failed,
+            Check::ALL.len()
+        );
+    }
+}

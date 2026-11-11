@@ -1,167 +1,115 @@
+//! Firmware for the Axis Driver, a SAMD51 based closed-loop stepper driver.
+//!
+//! The hardware-independent logic lives in the `axis-core` crate; this crate
+//! connects it to the board:
+//!
+//! - [`board`]: pin assignments, clocks and peripherals
+//! - [`motor`]: step generation in a timer interrupt, driver configuration
+//! - [`encoder`], [`led`]: the other on-board devices
+//! - [`usb_serial`]: the link to the host
+//! - [`commands`]: execution of host requests
+
 #![no_std]
 #![no_main]
 
-mod pins;
+mod axis;
+mod board;
+mod clock;
+mod commands;
+mod encoder;
+mod led;
+mod motor;
+mod tmc2209;
+mod usb_serial;
 mod ws2812;
 
-use atsamd_hal::{ehal::digital::OutputPin, pac};
-use atsamd_hal::{
-    fugit::RateExtU32,
-    sercom::{
-        uart::{self, BaudMode, Oversampling},
-        Sercom0,
-    },
-};
+use atsamd_hal::ehal::digital::{InputPin, OutputPin};
+use atsamd_hal::usb::{usb_device::bus::UsbBusAllocator, UsbBus};
+use axis_core::protocol::{Rgb, FIRMWARE_VERSION};
 use cortex_m_rt::entry;
+use log::info;
 use panic_halt as _;
-use rtt_target::{rprintln, rtt_init_print};
-use tmc2209::{reg::IFCNT, Reader};
+use rtt_target::{rtt_init_log, ChannelMode};
 
-const HALF_PERIOD_CYCLES: u32 = 50_000_000;
-const TMC2209_ADDRESS: u8 = 0;
-const TMC2209_STARTUP_DELAY_CYCLES: u32 = 2_400_000;
-const TMC2209_ECHO_TIMEOUT_CYCLES: u32 = 1_200_000;
-const TMC2209_RESPONSE_TIMEOUT_CYCLES: u32 = 12_000_000;
+use axis::Axis;
+use board::{Board, StatusLed, UserButton};
+use led::StatusPixel;
+use motor::Motor;
+use tmc2209::Tmc2209;
+use usb_serial::UsbSerial;
+use ws2812::Ws2812;
+
+const BOOT_COLOR: Rgb = Rgb::new(0x00, 0x11, 0x00);
+const WAITING_FOR_HOST_COLOR: Rgb = Rgb::new(0x00, 0x00, 0xF0);
+/// How long the user button is watched for after power-up.
+const BOOT_BUTTON_WINDOW_MS: u32 = 1_500;
+const WAITING_FOR_HOST_BLINK_MS: u32 = 80;
 
 #[entry]
 fn main() -> ! {
-    let mut peripherals = pac::Peripherals::take().unwrap();
-    let mut core_peripherals = cortex_m::Peripherals::take().unwrap();
-    let mut _clocks = atsamd_hal::clock::GenericClockController::with_internal_32kosc(
-        peripherals.gclk,
-        &mut peripherals.mclk,
-        &mut peripherals.osc32kctrl,
-        &mut peripherals.oscctrl,
-        &mut peripherals.nvmctrl,
-    );
-    let gclk0 = _clocks.gclk0();
-    let sercom0_clock = _clocks.sercom0_core(&gclk0).unwrap();
-    let pins = atsamd_hal::gpio::Pins::new(peripherals.port);
-    let uart_pads = uart::Pads::<Sercom0>::default().rx(pins.pa07).tx(pins.pa04);
-    let mut tmc_uart = uart::Config::new(
-        &peripherals.mclk,
-        peripherals.sercom0,
-        uart_pads,
-        sercom0_clock.freq(),
-    )
-    .baud(115_200u32.Hz(), BaudMode::Arithmetic(Oversampling::Bits16))
-    .enable();
-    let mut led = pins.pb13.into_push_pull_output();
-    let _neopix = pins.pb05.into_push_pull_output();
-    core_peripherals.DCB.enable_trace();
-    core_peripherals.DWT.enable_cycle_counter();
-    core_peripherals.DWT.set_cycle_count(0);
+    // Large enough to hold the whole self test report, so that none of it is
+    // dropped while the debugger is still catching up.
+    rtt_init_log!(log::LevelFilter::Debug, ChannelMode::NoBlockSkip, 8192);
+    let mut board = Board::take();
+    info!("Axis Driver firmware {:?} starting", FIRMWARE_VERSION);
 
-    rtt_init_print!();
-    rprintln!(
-        "LED blinker started on P{:?}{}",
-        pins::STAT_LED.port,
-        pins::STAT_LED.number
-    );
-    rprintln!("Waiting for TMC2209 power-on");
-    cortex_m::asm::delay(TMC2209_STARTUP_DELAY_CYCLES);
-    tmc_uart.flush_rx_buffer();
-    probe_tmc2209(&mut tmc_uart);
+    let usb_bus = cortex_m::singleton!(: UsbBusAllocator<UsbBus> = board.usb).unwrap();
+    let mut usb = UsbSerial::new(usb_bus);
+    let mut pixel = StatusPixel::new(Ws2812::new(board.pixel));
+
+    pixel.set_color(BOOT_COLOR);
+    if button_pressed_at_boot(&mut board.user_button, &mut usb) {
+        wait_for_host(&mut usb, &mut pixel, &mut board.status_led);
+    }
+    pixel.set_color(Rgb::BLACK);
+
+    let motor = Motor::start(board.motor, board.step_timer, Tmc2209::new(board.tmc_uart));
+    let mut axis = Axis::start(motor, pixel, board.i2c, board.status_led);
+    info!("Axis Driver running");
 
     loop {
-        led.set_high().unwrap();
-        rprintln!("LED high");
-        cortex_m::asm::delay(HALF_PERIOD_CYCLES);
-        led.set_low().unwrap();
-        rprintln!("LED low");
-        cortex_m::asm::delay(HALF_PERIOD_CYCLES);
+        usb.poll();
+        while let Some(message) = usb.next_request() {
+            axis.pixel.flash_activity(Rgb::GREEN);
+            let reply = match message {
+                Ok(request) => Some(axis.handle(request)),
+                Err(error) => commands::reject(error),
+            };
+            if let Some(reply) = reply {
+                axis.pixel.flash_activity(Rgb::BLUE);
+                usb.send(reply.as_bytes());
+            }
+        }
+        axis.poll();
     }
 }
 
-fn probe_tmc2209<U>(uart: &mut U)
-where
-    U: atsamd_hal::ehal_nb::serial::Read<u8> + atsamd_hal::ehal_nb::serial::Write<u8>,
-{
-    let request = tmc2209::read_request::<IFCNT>(TMC2209_ADDRESS);
-    rprintln!("TMC2209 IFCNT request sent");
-    let echo_deadline =
-        cortex_m::peripheral::DWT::cycle_count().wrapping_add(TMC2209_ECHO_TIMEOUT_CYCLES);
-
-    let mut sent = 0;
-    let mut echoed = 0;
-    while echoed < request.bytes().len() {
-        if sent < request.bytes().len() {
-            match atsamd_hal::ehal_nb::serial::Write::write(uart, request.bytes()[sent]) {
-                Ok(()) => sent += 1,
-                Err(atsamd_hal::nb::Error::WouldBlock) => {}
-                Err(atsamd_hal::nb::Error::Other(_)) => {
-                    rprintln!("TMC2209 UART write failed");
-                    return;
-                }
-            }
-        }
-
-        if echoed < sent {
-            match uart.read() {
-                Ok(byte) if byte == request.bytes()[echoed] => echoed += 1,
-                Ok(byte) => {
-                    rprintln!(
-                        "TMC2209 echo mismatch: expected {:02X}, received {:02X}",
-                        request.bytes()[echoed],
-                        byte
-                    );
-                    return;
-                }
-                Err(atsamd_hal::nb::Error::Other(_)) => {
-                    rprintln!("TMC2209 UART read failed while awaiting echo");
-                    return;
-                }
-                Err(atsamd_hal::nb::Error::WouldBlock) => {}
-            }
-        }
-
-        if (cortex_m::peripheral::DWT::cycle_count().wrapping_sub(echo_deadline) as i32) >= 0 {
-            rprintln!("TMC2209 request echo timed out");
-            return;
+/// Watches the user button for the first moments after power-up.
+fn button_pressed_at_boot(button: &mut UserButton, usb: &mut UsbSerial) -> bool {
+    while clock::millis() < BOOT_BUTTON_WINDOW_MS {
+        usb.poll();
+        if button.is_low().unwrap() {
+            return true;
         }
     }
+    false
+}
 
-    loop {
-        match atsamd_hal::ehal_nb::serial::Write::flush(uart) {
-            Ok(()) => break,
-            Err(atsamd_hal::nb::Error::WouldBlock) => {}
-            Err(atsamd_hal::nb::Error::Other(_)) => {
-                rprintln!("TMC2209 UART flush failed");
-                return;
-            }
+/// Blinks until a host opens the serial port, so that it does not miss the
+/// start-up.
+fn wait_for_host(usb: &mut UsbSerial, pixel: &mut StatusPixel, status_led: &mut StatusLed) {
+    let mut last_blink_ms = 0;
+    let mut lit = false;
+    while !usb.is_connected() {
+        usb.poll();
+        if clock::every(WAITING_FOR_HOST_BLINK_MS, &mut last_blink_ms) {
+            lit = !lit;
+            pixel.set_color(if lit {
+                WAITING_FOR_HOST_COLOR
+            } else {
+                Rgb::BLACK
+            });
+            let _ = status_led.set_state(lit.into());
         }
     }
-
-    let mut reader = Reader::default();
-    let deadline =
-        cortex_m::peripheral::DWT::cycle_count().wrapping_add(TMC2209_RESPONSE_TIMEOUT_CYCLES);
-    while (cortex_m::peripheral::DWT::cycle_count().wrapping_sub(deadline) as i32) < 0 {
-        match uart.read() {
-            Ok(byte) => {
-                if let (_, Some(response)) = reader.read_response(&[byte]) {
-                    if !response.crc_is_valid() {
-                        rprintln!("TMC2209 response CRC failed");
-                        return;
-                    }
-                    match response.register::<IFCNT>() {
-                        Ok(ifcnt) => {
-                            rprintln!("TMC2209 connected; IFCNT={}", ifcnt.get());
-                            return;
-                        }
-                        Err(_) => {
-                            rprintln!("TMC2209 response register mismatch");
-                            return;
-                        }
-                    }
-                }
-            }
-            Err(atsamd_hal::nb::Error::WouldBlock) => {}
-            Err(atsamd_hal::nb::Error::Other(_)) => {
-                rprintln!("TMC2209 UART read failed");
-                return;
-            }
-        }
-    }
-
-    rprintln!("TMC2209 response timed out");
 }
