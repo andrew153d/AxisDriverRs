@@ -1,4 +1,6 @@
-bossa := env_var('HOME') + "/.platformio/packages/tool-bossac/bossac"
+# The BOSSA command line tool, version 1.9 or later. Set BOSSAC to use one
+# that is not on the PATH.
+bossa := env_var_or_default('BOSSAC', 'bossac')
 chip := "ATSAMD51J19A"
 elf := "target/thumbv7em-none-eabihf/release/fw"
 # Where the firmware starts in flash, after the bootloader.

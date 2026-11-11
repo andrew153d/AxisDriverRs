@@ -15,7 +15,7 @@ use usbd_serial::{SerialPort, USB_CLASS_CDC};
 use crate::bootloader;
 use crate::clock;
 
-// Same identity as the original Arduino-based firmware.
+// How the board identifies itself to the host.
 const VID_PID: UsbVidPid = UsbVidPid(0x239A, 0x8031);
 const MANUFACTURER: &str = "Grow Engn";
 const PRODUCT: &str = "Grow Engn Axis Basic";

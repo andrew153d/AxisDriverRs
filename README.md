@@ -2,10 +2,9 @@
 
 Rust firmware for the Axis Driver, a stepper driver board built around an
 ATSAMD51J19A, a TMC2209 and a TLV493D magnetic shaft encoder, together with
-the Python library for controlling it. It started as a port of the original
-Arduino/PlatformIO firmware (the `AxisDriver` repository) but has its own,
-Protocol Buffers based host protocol and is not compatible with that
-project's host software.
+the Python library for controlling it and the design files of the board. A
+host talks to it over USB or, with the Ethernet HAT fitted, over UDP, using a
+protocol defined with Protocol Buffers.
 
 ## Layout
 
@@ -15,7 +14,8 @@ project's host software.
 | [`core`](core) (`axis-core`) | Everything that does not touch the microcontroller: message framing, the speed profile, the motor state machine, encoder filtering, settings, and drivers for the I2C devices and the W5500 Ethernet controller. Unit-tested on the host. |
 | [`fw`](fw) | The firmware image: board setup, the step timer interrupt, the TMC2209 and WS2812 drivers, the USB serial port, the Ethernet HAT and command execution. |
 | [`python`](python) | The `axis` Python package: the `Axis` class, a small command line tool and an example. |
-| [`bootloader`](bootloader) | The board's USB bootloader image. |
+| [`bootloader`](bootloader) | The board's USB bootloader: its image, and what it takes to build it. |
+| [`hardware`](hardware) | KiCad design files of the main board and the Ethernet HAT, and the pin assignments. |
 
 `fw/src/main.rs` lists the firmware modules.
 
@@ -41,7 +41,7 @@ tool starts.
 
 The board carries a UF2 bootloader in the first 16 KiB of flash, which starts
 the firmware at `0x4000` (see `fw/memory.x`). Its image is kept in
-[`bootloader/`](bootloader).
+[`bootloader/`](bootloader), along with how to build it.
 
 ### Over USB
 
@@ -51,8 +51,10 @@ just flash-usb            # or: just flash-usb /dev/ttyACM1
 
 This builds the firmware, asks the running firmware to reboot into the
 bootloader by opening its serial port at 1200 baud, and uploads with
-`bossac`. No button press or debugger is needed. `bossac` is taken from the
-PlatformIO package directory (`~/.platformio/packages/tool-bossac`).
+`bossac`. No button press or debugger is needed. It needs
+[BOSSA](https://github.com/shumatech/BOSSA) 1.9 or later: either `bossac` on
+the `PATH` (`apt install bossa-cli` on Debian and Ubuntu) or its location in
+the `BOSSAC` environment variable.
 
 In bootloader mode the board also appears as a USB drive named `AXISBASIC`.
 If the firmware is too broken to answer on USB, the bootloader can only be
@@ -190,7 +192,7 @@ just info -p 192.168.1.50:12000
 should answer, and the board answers pings.
 
 - The network is assumed to be a `255.255.255.0` one with its gateway at host
-  1, as in the original firmware. There is no DHCP.
+  1. There is no DHCP.
 - At start-up the status pixel flashes purple after the self test report when
   the HAT is up, and red when a HAT is fitted but could not be started, which
   the log explains: usually the address or port has not been set. Without a
@@ -294,41 +296,28 @@ the USB port, the status LED and pixel themselves, and the user button. The
 supply voltage sense inputs are not read by this firmware yet. The motor is
 not moved.
 
-## Compared to the original firmware
+## Behaviour worth knowing
 
-Carried over: position, velocity, path and homing motion, TMC2209
-configuration, the shaft encoder, the status LEDs and settings storage in the
-EEPROM, in the layout the original firmware used.
-
-Carried over as well, with the new protocol: control over UDP through the
-Ethernet HAT.
-
-Not carried over: the Home Assistant MQTT integration, and debug output over
-UDP (the log is read with `GetLog` instead, over either link). The I2C
-address setting is stored and reported, but nothing uses it.
-
-Different:
-
-- The host protocol is new, as described above. Messages are checked on
-  arrival: a request that cannot be decoded or holds an invalid value is
-  answered with `INVALID`, and one that fails (for example because the
-  TMC2209 does not respond) with `ERROR` and a line in the log.
-- Positions are reported with full microstep resolution (0.225°) instead of
-  being rounded down to whole degrees.
-- The homed flag is set once a homing sequence has completed, and the homing
-  direction reads back as it was set.
+- Messages are checked on arrival: a request that cannot be decoded or holds
+  an invalid value is answered with `INVALID`, and one that fails (for
+  example because the TMC2209 does not respond) with `ERROR` and a line in
+  the log.
+- Positions are reported with full microstep resolution (0.225°).
 - The motor outputs stay disabled after power-up until the first motion
   command.
-- All motion is limited to the configured acceleration and maximum speed,
-  not just position moves. A velocity command ramps to its speed, and a path
-  ramps between segment speeds, carries speed across segments that continue
-  in the same direction, and brakes to a stop at its end. A path whose
-  speed changes are sharper than the acceleration setting allows will
-  therefore lag its nominal timing; raise the acceleration to tighten it.
-- Setting the `IDLE` state brakes a moving motor to a stop instead of
-  freezing it mid-step; `OFF` and redefining the position still stop it dead.
-- Path segments with zero speed or zero length are skipped instead of
-  stalling the path.
-- Homing is refused if the encoder failed its self test.
-- The queues for LED steps (32) and path segments (1024) are bounded;
-  a request that does not fit fails.
+- All motion is limited to the configured acceleration and maximum speed. A
+  velocity command ramps to its speed, and a path ramps between segment
+  speeds, carries speed across segments that continue in the same direction,
+  and brakes to a stop at its end. A path whose speed changes are sharper
+  than the acceleration setting allows will therefore lag its nominal timing;
+  raise the acceleration to tighten it.
+- Setting the `IDLE` state brakes a moving motor to a stop; `OFF` and
+  redefining the position stop it dead.
+- Path segments with zero speed or zero length are skipped.
+- The homed flag is set once a homing sequence has completed. Homing is
+  refused if the encoder failed its self test.
+- The queues for LED steps (32) and path segments (1024) are bounded; a
+  request that does not fit fails.
+- The motion settings are not stored: they return to their defaults at
+  power-up. The I2C address setting is stored and reported, but nothing uses
+  it yet.

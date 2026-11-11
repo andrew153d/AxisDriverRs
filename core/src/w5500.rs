@@ -106,8 +106,7 @@ pub struct Interface {
 }
 
 impl Interface {
-    /// Assumes what the original firmware did: a network of 254 hosts whose
-    /// gateway is host number 1.
+    /// Assumes a network of 254 hosts whose gateway is host number 1.
     pub fn new(mac: [u8; 6], address: [u8; 4]) -> Self {
         Self {
             mac,

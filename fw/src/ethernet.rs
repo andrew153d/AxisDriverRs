@@ -30,7 +30,7 @@ const LINK_CHECK_MS: u32 = 500;
 /// Longer than the W5500 takes to give up on a destination that does not
 /// answer ARP.
 const SEND_TIMEOUT_MS: u32 = 250;
-/// Port to which the device announces itself, as the original firmware did.
+/// Port to which the device announces itself.
 const ANNOUNCE_PORT: u16 = 35461;
 
 type Error = w5500::Error<spi::Error>;

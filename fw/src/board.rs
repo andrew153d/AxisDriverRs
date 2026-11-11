@@ -34,7 +34,7 @@ pub type I2cBus = i2c::I2c<i2c::Config<i2c::PadsFromIds<Sercom3, PA22, PA23>>>;
 /// SPI bus on the auxiliary port.
 pub type AuxSpi = spi::Spi<spi::Config<spi::PadsFromIds<Sercom5, PB00, PB02, PB03>>, spi::Duplex>;
 
-/// The W5500 runs up to 80 MHz; the original firmware used 14 MHz.
+/// Well within the 80 MHz the W5500 runs up to.
 const ETHERNET_SPI_HZ: u32 = 12_000_000;
 
 /// Connections to the Ethernet HAT, which plugs into the auxiliary port.

@@ -1,18 +1,16 @@
 //! Persistent configuration.
 //!
 //! The settings live in the board's 256 byte EEPROM as a packed,
-//! little-endian image, in the layout defined by the original firmware:
+//! little-endian image:
 //!
 //! | offset | size | field                                   |
 //! | ------ | ---- | --------------------------------------- |
 //! | 0      | 2    | Ethernet UDP port                       |
 //! | 2      | 4    | Ethernet IP address                     |
 //! | 6      | 1    | I2C address                             |
-//! | 7      | 1    | motor settings (placeholder)            |
-//! | 8      | 166  | Home Assistant / MQTT settings          |
-//! | 174    | 82   | unused                                  |
+//! | 7      | 249  | reserved                                |
 //!
-//! Fields this firmware does not use are kept untouched.
+//! The reserved bytes are kept as they are found.
 
 use crate::eeprom::{Eeprom, EEPROM_SIZE, PAGE_SIZE};
 use embedded_hal::delay::DelayNs;
@@ -132,7 +130,7 @@ mod tests {
     use crate::eeprom::fake::FakeBus;
 
     #[test]
-    fn fields_use_the_original_packed_layout() {
+    fn fields_use_the_packed_layout() {
         let mut image = [0; EEPROM_SIZE];
         image[..8].copy_from_slice(&[0xE0, 0x2E, 0x0A, 0x00, 0xA8, 0xC0, 0x42, 0x00]);
         let mut settings = Settings::from_image(image);
