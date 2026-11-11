@@ -216,7 +216,8 @@ enum Direction {
 
 message Motor {
   MotorState state = 1;
-  // Commanded position, in degrees.
+  // Commanded position, in degrees. Closed loop control corrects it when
+  // the shaft loses steps.
   double position = 2;
   // Target of the position mode, in degrees.
   double target = 3;
@@ -233,6 +234,13 @@ message Motor {
   uint32 path_free = 10;
   // Absent if the encoder failed the self test.
   Encoder encoder = 11;
+  // Closed loop control gave up because the shaft kept losing steps, as it
+  // does when it is blocked, and stopped the motor. Cleared by the next
+  // command that changes the motor state.
+  bool stalled = 12;
+  // Number of times closed loop control has corrected lost steps since
+  // power-up.
+  uint32 corrections = 13;
 }
 
 // Shaft measurements from the magnetic encoder.
@@ -252,6 +260,12 @@ message MotionSettings {
   optional uint32 max_speed = 1;
   optional uint32 acceleration = 2;
   optional Brake brake = 3;
+  // Whether the encoder is used to notice lost steps and make up for them:
+  // the motor stops, the commanded position is corrected to where the shaft
+  // is, and the motion is taken up again. On at power-up if the encoder
+  // passed the self test; cannot be switched on without it. Switching it on
+  // corrects the commanded position without moving the motor.
+  optional bool closed_loop = 4;
 }
 
 // In a request only the fields that are present are changed.

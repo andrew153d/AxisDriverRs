@@ -325,10 +325,14 @@ class Axis:
         max_speed: Optional[int] = None,
         acceleration: Optional[int] = None,
         brake: Optional[Brake] = None,
+        closed_loop: Optional[bool] = None,
     ) -> pb.Motor:
-        """Changes the limits that apply to all motion, and the standstill
-        behaviour of the driver. Only the given settings are changed."""
+        """Changes the limits that apply to all motion, the standstill
+        behaviour of the driver, and whether closed loop control is on; see
+        :attr:`closed_loop`. Only the given settings are changed."""
         settings = pb.MotionSettings()
+        if closed_loop is not None:
+            settings.closed_loop = closed_loop
         if max_speed is not None:
             settings.max_speed = max_speed
         if acceleration is not None:
@@ -336,6 +340,24 @@ class Axis:
         if brake is not None:
             settings.brake = int(brake)
         return self._request(set_motion=settings).motor
+
+    @property
+    def closed_loop(self) -> bool:
+        """Whether the encoder is used to notice lost steps and make up for
+        them: the motor stops, the commanded position is corrected to where
+        the shaft is, and the motion is taken up again. On at power-up if
+        the encoder works; switching it on without one is refused."""
+        return self.status().motion.closed_loop
+
+    @closed_loop.setter
+    def closed_loop(self, enabled: bool) -> None:
+        self.set_motion(closed_loop=enabled)
+
+    @property
+    def stalled(self) -> bool:
+        """Whether closed loop control gave up on a blocked shaft and stopped
+        the motor. Cleared by the next motion command."""
+        return self.status().stalled
 
     @property
     def max_speed(self) -> int:

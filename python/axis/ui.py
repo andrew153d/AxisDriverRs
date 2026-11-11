@@ -296,6 +296,8 @@ class ControlPanel(tk.Frame):
         self._polls = 0
         #: Widgets that only make sense while connected.
         self._controls: list[tk.Widget] = []
+        #: Whether the device last reported closed loop control as on.
+        self._closed_loop = False
 
         self.port = tk.StringVar(value=port)
         self.message = tk.StringVar()
@@ -380,7 +382,8 @@ class ControlPanel(tk.Frame):
         grid = tk.Frame(body, bg=theme.CARD)
         grid.pack(fill="x")
         grid.columnconfigure(1, weight=1)
-        for row, name in enumerate(("Target", "Velocity", "Encoder", "Following error", "Homed")):
+        names = ("Target", "Velocity", "Encoder", "Following error", "Closed loop", "Homed")
+        for row, name in enumerate(names):
             self.readouts[name] = variable = tk.StringVar(value="–")
             self._label(grid, name).grid(row=row, column=0, sticky="w", pady=2)
             self._label(grid, muted=False, textvariable=variable, width=24, anchor="e").grid(
@@ -445,7 +448,11 @@ class ControlPanel(tk.Frame):
             entry.grid(row=row_index, column=1, ipady=4, padx=6)
             entry.bind("<Return>", lambda _event: self.apply_limits())
             self._label(fields, unit, font=theme.small).grid(row=row_index, column=2, sticky="w")
-        self._button(limits.body, "Apply", self.apply_limits).pack(anchor="e", pady=(8, 0))
+        row = tk.Frame(limits.body, bg=theme.CARD)
+        row.pack(fill="x", pady=(8, 0))
+        self._button(row, "Apply", self.apply_limits).pack(side="right")
+        self.closed_loop_button = self._button(row, "Closed loop", self.toggle_closed_loop)
+        self.closed_loop_button.pack(side="left")
 
         homing = Card(column, theme, "Homing")
         homing.grid(row=3, column=1, sticky="nsew", pady=(14, 0), padx=(7, 0))
@@ -590,6 +597,9 @@ class ControlPanel(tk.Frame):
 
         self._run(apply)
 
+    def toggle_closed_loop(self) -> None:
+        self._run(lambda axis: axis.set_motion(closed_loop=not self._closed_loop))
+
     def _show_spin_speed(self, speed: float) -> None:
         rpm = round(speed) / STEPS_PER_REVOLUTION * 60
         self.spin_label.set(f"{round(speed):+d} steps/s   ·   {rpm:+.1f} rpm")
@@ -643,6 +653,17 @@ class ControlPanel(tk.Frame):
         else:
             self.readouts["Encoder"].set("not available")
             self.readouts["Following error"].set("–")
+        self._closed_loop = status.motion.closed_loop
+        if status.stalled:
+            closed_loop = "STALLED: shaft blocked"
+        elif self._closed_loop:
+            closed_loop = f"on   ·   {status.corrections} corrections"
+        else:
+            closed_loop = "off"
+        self.readouts["Closed loop"].set(closed_loop)
+        self.closed_loop_button.set_text(
+            "Open the loop" if self._closed_loop else "Close the loop"
+        )
         self.readouts["Homed"].set("yes" if status.homed else "no")
         self.home_button.set_enabled(has_encoder)
 

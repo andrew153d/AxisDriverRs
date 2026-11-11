@@ -50,6 +50,10 @@ def show_status(axis: Axis) -> None:
         print(f"Encoder         {encoder.position:.1f} deg, {encoder.velocity:.1f} deg/s")
     else:
         print("Encoder         not available")
+    print(
+        f"Closed loop     {'on' if status.motion.closed_loop else 'off'}, "
+        f"{status.corrections} corrections{', STALLED' if status.stalled else ''}"
+    )
 
 
 def show_logs(axis: Axis, follow: bool) -> None:
