@@ -2,11 +2,11 @@
 
 use atsamd_hal::ehal::digital::StatefulOutputPin;
 use axis_core::eeprom::{Eeprom, EEPROM_SIZE};
+use axis_core::motion::Correction;
 use axis_core::selftest::{Check, Report};
 use axis_core::settings::{Settings, SettingsStore};
 use axis_core::types::Rgb;
 use core::fmt::Debug;
-use axis_core::motion::Correction;
 use log::{error, info, warn};
 
 use crate::board::{I2cBus, StatusLed};

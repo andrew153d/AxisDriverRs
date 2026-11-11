@@ -29,6 +29,14 @@ cargo build --release -p fw   # firmware ELF for thumbv7em-none-eabihf
 just test                     # unit tests of axis-core, on the host
 ```
 
+Every push to `main` and every pull request is checked on GitHub Actions
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)): formatting
+(`cargo fmt`), the unit tests, Clippy with warnings as errors, and the
+firmware build, whose ELF is kept as an artifact. For the Python package it
+checks that the generated message classes match `proto/axis.proto`, that the
+package installs on the oldest supported Python, and that the command line
+tool starts.
+
 ## Flashing
 
 The board carries a UF2 bootloader in the first 16 KiB of flash, which starts

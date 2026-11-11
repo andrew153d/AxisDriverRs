@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The version that generated python/axis/axis_pb2.py. The check that the
+  # generated files are up to date only holds with this exact version.
+  PROTOC_VERSION: "30.2"
+
+jobs:
+  firmware:
+    name: Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+          components: rustfmt, clippy
+      # The build script of axis-core runs protoc.
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: ${{ env.PROTOC_VERSION }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: taiki-e/install-action@just
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Unit tests
+        run: just test
+      - name: Lint axis-core
+        run: >
+          cargo clippy -p axis-core --all-targets
+          --target "$(rustc -vV | sed -n 's/^host: //p')" -- -D warnings
+      - name: Lint firmware
+        run: cargo clippy --release -p fw -- -D warnings
+      - name: Build firmware
+        run: just build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: target/thumbv7em-none-eabihf/release/fw
+          if-no-files-found: error
+
+  python:
+    name: Python package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # The oldest version the package supports.
+          python-version: "3.10"
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: ${{ env.PROTOC_VERSION }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: taiki-e/install-action@just
+
+      - name: Generated message classes are up to date
+        run: |
+          just proto
+          git diff --exit-code -- python/axis
+      - name: Install
+        run: just python-setup
+      - name: Sources compile
+        run: .venv/bin/python -m compileall -q python/axis python/examples
+      - name: Command line tool starts
+        run: .venv/bin/python -m axis --help

@@ -1084,7 +1084,8 @@ mod tests {
                     update_rate_hz: 100.0,
                 };
                 self.measuring = self.shaft;
-                self.events.extend(self.motion.set_encoder_feedback(feedback));
+                self.events
+                    .extend(self.motion.set_encoder_feedback(feedback));
             }
             steps
         }
