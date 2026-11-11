@@ -112,12 +112,12 @@ impl SettingsStore {
         i2c: &mut I,
         delay: &mut impl DelayNs,
     ) -> Result<(), I::Error> {
-        let pages = self.current.image.chunks_exact(PAGE_SIZE);
-        let saved_pages = self.saved.image.chunks_exact_mut(PAGE_SIZE);
-        for (index, (page, saved_page)) in pages.zip(saved_pages).enumerate() {
+        let (pages, _) = self.current.image.as_chunks::<PAGE_SIZE>();
+        let (saved_pages, _) = self.saved.image.as_chunks_mut::<PAGE_SIZE>();
+        for (index, (page, saved_page)) in pages.iter().zip(saved_pages).enumerate() {
             if page != saved_page {
                 eeprom.write_page(i2c, delay, (index * PAGE_SIZE) as u8, page)?;
-                saved_page.copy_from_slice(page);
+                *saved_page = *page;
             }
         }
         Ok(())

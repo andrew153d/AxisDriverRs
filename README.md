@@ -20,7 +20,9 @@ protocol defined with Protocol Buffers.
 `fw/src/main.rs` lists the firmware modules.
 
 Building needs `protoc` on the `PATH`, as the Rust message types are
-generated at build time.
+generated at build time. The Rust version is fixed in
+[`rust-toolchain.toml`](rust-toolchain.toml), for CI as well; rustup installs
+it on first use.
 
 ## Building and testing
 

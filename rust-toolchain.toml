@@ -1,0 +1,7 @@
+# The Rust version the firmware is built, tested and linted with, here and in
+# CI. rustup installs it on first use. Raise it deliberately: a newer Clippy
+# brings new lints.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+targets = ["thumbv7em-none-eabihf"]
