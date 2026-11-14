@@ -6,6 +6,11 @@ the Python library for controlling it and the design files of the board. A
 host talks to it over USB or, with the Ethernet HAT fitted, over UDP, using a
 protocol defined with Protocol Buffers.
 
+**Control panel: <https://andrew153d.github.io/AxisDriverRs/>.** Plug a board
+in over USB, open the page and click Connect to move the motor, watch its
+state and set the board up, with nothing to install. See
+[Web control panel](#web-control-panel) for which browsers it works in.
+
 ## Layout
 
 | Path | Contents |
