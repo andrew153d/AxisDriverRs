@@ -1,0 +1,508 @@
+/* The colors of the Python control panel (python/axis/ui.py). */
+:root {
+  --window: #0e1116;
+  --card: #171b23;
+  --card-border: #232936;
+  --field: #0e1116;
+  --field-border: #2b3342;
+  --text: #e7eaf0;
+  --muted: #8a93a6;
+  --faint: #3a4354;
+  --accent: #4c8dff;
+  --accent-hover: #6aa1ff;
+  --button: #252b38;
+  --button-hover: #303848;
+  --danger: #e5484d;
+  --danger-hover: #f2686c;
+  --ok: #3ecf8e;
+  --warning: #f5a524;
+  --disabled-text: #565f72;
+
+  --sans: Inter, Ubuntu, Roboto, "Noto Sans", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Ubuntu Mono", "Noto Sans Mono", ui-monospace, monospace;
+  --gap: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0 auto;
+  padding: 16px 18px;
+  max-width: 1000px;
+  background: var(--window);
+  color: var(--text);
+  font: 14px/1.4 var(--sans);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 12px;
+}
+
+p {
+  margin: 0;
+}
+
+/* -- Header --------------------------------------------------------------- */
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+h1 {
+  margin: 0 10px 0 0;
+  font-size: 19px;
+}
+
+#tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.dot.connected {
+  background: var(--ok);
+}
+
+#connect {
+  min-width: 110px;
+  margin-left: auto;
+}
+
+/* -- Buttons and fields --------------------------------------------------- */
+
+button {
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--button);
+  color: var(--text);
+  font: bold 14px var(--sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--button-hover);
+}
+
+button.accent {
+  background: var(--accent);
+  color: #fff;
+}
+
+button.accent:hover {
+  background: var(--accent-hover);
+}
+
+button.danger {
+  min-width: 150px;
+  background: var(--danger);
+  color: #fff;
+}
+
+button.danger:hover {
+  background: var(--danger-hover);
+}
+
+/* A page tab that is not the page being shown. */
+button.tab:not(.selected) {
+  background: none;
+  color: var(--muted);
+}
+
+button.tab:not(.selected):hover {
+  background: var(--card);
+}
+
+button:disabled {
+  background: var(--button);
+  color: var(--disabled-text);
+  cursor: default;
+}
+
+input:not([type="range"]) {
+  padding: 7px 8px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  background: var(--field);
+  color: var(--text);
+  font: 14px var(--sans);
+  text-align: center;
+}
+
+input:disabled {
+  color: var(--disabled-text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+input:not([type="range"]):focus-visible {
+  outline: 0;
+  border-color: var(--accent);
+}
+
+/* -- Cards ---------------------------------------------------------------- */
+
+.card {
+  padding: 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  background: var(--card);
+}
+
+.card h2 {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.state {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.fields label {
+  color: var(--muted);
+}
+
+.fields + .row {
+  margin-top: 10px;
+}
+
+/* -- Pages ---------------------------------------------------------------- */
+
+/* The pages share one cell, so the layout keeps its size when switching. */
+main {
+  display: grid;
+  margin-bottom: var(--gap);
+}
+
+.page {
+  grid-area: 1 / 1;
+  display: grid;
+  gap: var(--gap);
+}
+
+.page:not(.shown) {
+  visibility: hidden;
+}
+
+#page-control {
+  grid-template-columns: auto 1fr;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap);
+}
+
+.controls .wide {
+  grid-column: span 2;
+}
+
+.homing {
+  display: flex;
+  flex-direction: column;
+}
+
+.homing p {
+  flex: 1;
+  margin-bottom: 8px;
+}
+
+#page-configuration {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto 1fr auto;
+}
+
+.identity {
+  grid-row: span 2;
+  display: flex;
+  flex-direction: column;
+}
+
+.identity dl {
+  flex: 1;
+  margin: 0;
+}
+
+.identity dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.identity dd {
+  margin: 0 0 10px;
+  font-family: var(--mono);
+}
+
+.eeprom {
+  grid-column: span 2;
+}
+
+.eeprom p {
+  max-width: 60ch;
+}
+
+/* -- Status --------------------------------------------------------------- */
+
+.status {
+  /* The color of the state the motor is in. */
+  --state: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 290px;
+}
+
+.status h2 {
+  align-self: stretch;
+}
+
+#dial {
+  fill: none;
+}
+
+#dial .ring {
+  stroke: var(--card-border);
+  stroke-width: 10;
+}
+
+#dial-ticks line {
+  stroke: var(--faint);
+}
+
+#dial-ticks line.major {
+  stroke: var(--muted);
+  stroke-width: 2;
+}
+
+#dial-arc {
+  stroke: var(--state);
+  stroke-width: 10;
+}
+
+#dial-target {
+  fill: var(--window);
+  stroke: var(--state);
+  stroke-width: 2;
+}
+
+#dial-encoder {
+  fill: var(--warning);
+}
+
+#dial-needle {
+  stroke: var(--text);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+#dial .hub {
+  fill: var(--card);
+  stroke: var(--text);
+  stroke-width: 3;
+}
+
+.readout {
+  font-size: 40px;
+  font-weight: bold;
+  font-variant-numeric: tabular-nums;
+}
+
+.caption {
+  margin-bottom: 12px;
+}
+
+#readouts {
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+
+#readouts dt {
+  color: var(--muted);
+}
+
+#readouts dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- Jogging and spinning ------------------------------------------------- */
+
+.jog {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.jog button {
+  padding-inline: 0;
+}
+
+/* A slider that fills from the centre, where the speed is zero. */
+#spin-slider {
+  /* Where the knob is, from 0 at the left to 1 at the right. */
+  --fraction: 0.5;
+  --knob: 18px;
+  --at: calc(var(--knob) / 2 + (100% - var(--knob)) * var(--fraction));
+  --fill: var(--accent);
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  margin: 0 0 8px;
+  background: none;
+  cursor: pointer;
+}
+
+#spin-slider:disabled {
+  --fill: var(--faint);
+  cursor: default;
+}
+
+#spin-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--field-border) min(50%, var(--at)),
+    var(--fill) min(50%, var(--at)) max(50%, var(--at)),
+    var(--field-border) max(50%, var(--at))
+  );
+}
+
+#spin-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--knob);
+  height: var(--knob);
+  margin-top: -7px;
+  border: 3px solid var(--card);
+  border-radius: 50%;
+  background: var(--fill);
+}
+
+/* The same again for Firefox, which names the parts differently. */
+#spin-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--field-border) min(50%, var(--at)),
+    var(--fill) min(50%, var(--at)) max(50%, var(--at)),
+    var(--field-border) max(50%, var(--at))
+  );
+}
+
+#spin-slider::-moz-range-thumb {
+  box-sizing: border-box;
+  width: var(--knob);
+  height: var(--knob);
+  border: 3px solid var(--card);
+  border-radius: 50%;
+  background: var(--fill);
+}
+
+#spin-label {
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- Log and messages ----------------------------------------------------- */
+
+#log {
+  height: 10.5em;
+  margin: 0;
+  overflow: auto;
+  color: var(--muted);
+  font: 13px/1.5 var(--mono);
+}
+
+#log .warn {
+  color: var(--warning);
+}
+
+#log .error {
+  color: var(--danger);
+}
+
+/* Always takes up its line, so that the page does not jump. */
+#message {
+  min-height: 1.4em;
+  margin-bottom: 10px;
+  color: var(--danger);
+}
+
+/* -- Narrow windows ------------------------------------------------------- */
+
+@media (max-width: 760px) {
+  #page-control,
+  #page-configuration,
+  .controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .controls .wide,
+  .identity,
+  .eeprom {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  /* Stacked, the pages differ too much in height to share a cell. */
+  .page:not(.shown) {
+    display: none;
+  }
+
+  .jog {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}

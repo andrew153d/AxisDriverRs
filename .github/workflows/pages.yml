@@ -1,0 +1,54 @@
+# Publishes the web control panel in web/ to GitHub Pages.
+#
+# Needs "GitHub Actions" chosen as the source under Settings > Pages of the
+# repository, once.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/**
+      - proto/axis.proto
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+# One deployment at a time, and one that has started is left to finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - name: Tests
+        run: just test-web
+      # The page is its source files: there is nothing to build.
+      - name: Collect the site
+        run: |
+          mkdir _site
+          cp web/*.html web/*.css web/*.js _site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

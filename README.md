@@ -14,6 +14,7 @@ protocol defined with Protocol Buffers.
 | [`core`](core) (`axis-core`) | Everything that does not touch the microcontroller: message framing, the speed profile, the motor state machine, encoder filtering, settings, and drivers for the I2C devices and the W5500 Ethernet controller. Unit-tested on the host. |
 | [`fw`](fw) | The firmware image: board setup, the step timer interrupt, the TMC2209 and WS2812 drivers, the USB serial port, the Ethernet HAT and command execution. |
 | [`python`](python) | The `axis` Python package: the `Axis` class, a small command line tool and an example. |
+| [`web`](web) | The control panel as a web page, which reaches the board from the browser over Web Serial. Published with GitHub Pages. |
 | [`bootloader`](bootloader) | The board's USB bootloader: its image, and what it takes to build it. |
 | [`hardware`](hardware) | KiCad design files of the main board and the Ethernet HAT, and the pin assignments. |
 
@@ -37,7 +38,7 @@ Every push to `main` and every pull request is checked on GitHub Actions
 firmware build, whose ELF is kept as an artifact. For the Python package it
 checks that the generated message classes match `proto/axis.proto`, that the
 package installs on the oldest supported Python, and that the command line
-tool starts.
+tool starts. For the web control panel it runs the tests in `web/tests`.
 
 ## Flashing
 
@@ -176,6 +177,55 @@ After changing `proto/axis.proto`, run `just proto` to regenerate
 `python/axis/axis_pb2.py`. It needs the Python `protobuf` package to be at
 least as new as `protoc`, which is why the package lives in its own
 environment.
+
+## Web control panel
+
+[`web/`](web) holds the same control panel as a web page, which talks to the
+board straight from the browser over USB, with nothing to install:
+
+<https://andrew153d.github.io/AxisDriverRs/>
+
+Click Connect and pick the board in the browser's list. It has the Control
+and Configuration pages of the Python panel and behaves the same, except
+that:
+
+- It needs a browser with [Web Serial](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API)
+  on a computer: Chrome, Edge and other Chromium browsers, and recent
+  versions of Firefox. Brave has it switched off until it is enabled in its
+  flags. A browser installed as a snap or flatpak may be kept from serial
+  ports by its sandbox, in which case no board is offered to connect to: the
+  Firefox snap that comes with Ubuntu is one.
+- It reaches the board over USB only, as a web page cannot send UDP. The
+  Ethernet settings can still be set up from it.
+- A board that has been connected to before is connected to again when the
+  page is opened.
+- Closing the page asks the board to switch the motor outputs off, but a
+  browser does not promise a closing page that its last message goes out. Use
+  Disable first if it matters.
+- On Linux the serial port may be open in several programs at once, which
+  then take each other's responses: disconnect the page before using the
+  Python tools, and the other way round.
+
+The page is plain HTML, CSS and JavaScript modules with no build step and no
+dependencies. [`web/protocol.js`](web/protocol.js) describes the messages of
+`proto/axis.proto` and encodes them itself rather than using generated code,
+so after changing the `.proto` file it has to be changed to match; `just
+test-web` (which needs Node.js 20 or later) fails until it does.
+[`web/axis.js`](web/axis.js) is the counterpart of the Python `Axis` class and
+[`web/app.js`](web/app.js) is the panel.
+
+```sh
+just web        # serve it at http://localhost:8137 (or: just web 8200)
+just test-web   # run its tests
+```
+
+It has to be served rather than opened as a file, since browsers only allow
+Web Serial on pages from HTTPS or localhost.
+
+Every push to `main` that changes it is published by
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml), once its tests
+pass. That needs "GitHub Actions" chosen as the source under Settings > Pages
+of the repository, once.
 
 ## Ethernet
 

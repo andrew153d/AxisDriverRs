@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Axis Driver</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Axis Driver</h1>
+      <nav id="tabs">
+        <button type="button" class="tab" data-page="control">Control</button>
+        <button type="button" class="tab" data-page="configuration">Configuration</button>
+      </nav>
+      <span id="connection-dot" class="dot"></span>
+      <span id="connection" class="muted">Not connected</span>
+      <button type="button" id="connect" class="accent">Connect</button>
+    </header>
+
+    <p id="message" role="alert"></p>
+
+    <main>
+      <section id="page-control" class="page">
+        <div class="card status">
+          <h2>Status <span id="state" class="state">–</span></h2>
+          <svg id="dial" viewBox="0 0 230 230" width="230" height="230" role="img" aria-label="Shaft angle">
+            <circle class="ring" cx="115" cy="115" r="101" />
+            <g id="dial-ticks"></g>
+            <g id="dial-live">
+              <path id="dial-arc" />
+              <circle id="dial-target" r="5" />
+              <circle id="dial-encoder" r="4" />
+              <line id="dial-needle" x1="115" y1="115" />
+              <circle class="hub" cx="115" cy="115" r="8" />
+            </g>
+          </svg>
+          <div id="position" class="readout">–</div>
+          <div class="small muted caption">commanded position</div>
+          <dl id="readouts">
+            <dt>Target</dt>
+            <dd data-readout="target">–</dd>
+            <dt>Velocity</dt>
+            <dd data-readout="velocity">–</dd>
+            <dt>Encoder</dt>
+            <dd data-readout="encoder">–</dd>
+            <dt>Following error</dt>
+            <dd data-readout="following-error">–</dd>
+            <dt>Closed loop</dt>
+            <dd data-readout="closed-loop">–</dd>
+            <dt>Homed</dt>
+            <dd data-readout="homed">–</dd>
+          </dl>
+        </div>
+
+        <div class="controls">
+          <div class="card wide">
+            <h2>Power</h2>
+            <div class="row">
+              <button type="button" id="enable" data-control>Enable</button>
+              <button type="button" id="disable" data-control>Disable</button>
+              <span class="spacer"></span>
+              <button type="button" id="stop" class="danger" data-control>Stop · Esc</button>
+            </div>
+          </div>
+
+          <div class="card wide">
+            <h2>Position · degrees</h2>
+            <form id="goto-form" class="row">
+              <input id="goto" value="0" size="10" inputmode="decimal" aria-label="Position in degrees" data-control />
+              <button class="accent" data-control>Go</button>
+              <span class="spacer"></span>
+              <button type="button" id="set-zero" data-control>Set as zero</button>
+            </form>
+            <div id="jog" class="jog"></div>
+          </div>
+
+          <div class="card wide">
+            <h2>Velocity</h2>
+            <input type="range" id="spin-slider" min="-1" max="1" value="0" step="1" aria-label="Speed in steps per second" data-control />
+            <div class="row">
+              <span id="spin-label"></span>
+              <span class="spacer"></span>
+              <button type="button" id="spin-zero" data-control>Zero</button>
+              <button type="button" id="spin" class="accent" data-control>Spin</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Limits</h2>
+            <form id="limits-form">
+              <div class="fields">
+                <label for="max-speed">Max speed</label>
+                <input id="max-speed" size="8" inputmode="numeric" data-control />
+                <span class="small muted">steps/s</span>
+                <label for="acceleration">Acceleration</label>
+                <input id="acceleration" size="8" inputmode="numeric" data-control />
+                <span class="small muted">steps/s²</span>
+              </div>
+              <div class="row">
+                <button type="button" id="closed-loop" data-control>Closed loop</button>
+                <span class="spacer"></span>
+                <button data-control>Apply</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card homing">
+            <h2>Homing</h2>
+            <p class="small muted">Runs into the end stop and backs off, using the encoder.</p>
+            <div class="row">
+              <span class="spacer"></span>
+              <button type="button" id="home" data-control>Home</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-configuration" class="page">
+        <div class="card identity">
+          <h2>Identity · read only</h2>
+          <dl>
+            <dt>Firmware</dt>
+            <dd data-identity="firmware">–</dd>
+            <dt>MAC address</dt>
+            <dd data-identity="mac">–</dd>
+            <dt>Serial number</dt>
+            <dd data-identity="serial">–</dd>
+            <dt>EEPROM self test</dt>
+            <dd data-identity="eeprom">–</dd>
+          </dl>
+          <p class="small muted">
+            The MAC address and serial number are programmed into the EEPROM at the factory.
+          </p>
+        </div>
+
+        <div class="card ethernet">
+          <h2>Ethernet</h2>
+          <div class="fields">
+            <label for="ethernet-address">IP address</label>
+            <input id="ethernet-address" size="16" inputmode="decimal" data-control data-config />
+            <span class="small muted">IPv4</span>
+            <label for="ethernet-port">UDP port</label>
+            <input id="ethernet-port" size="16" inputmode="numeric" data-control data-config />
+            <span class="small muted">0 – 65535</span>
+          </div>
+        </div>
+
+        <div class="card i2c">
+          <h2>I2C</h2>
+          <div class="fields">
+            <label for="i2c-address">Address</label>
+            <input id="i2c-address" size="16" data-control data-config />
+            <span class="small muted">0x00 – 0x7F</span>
+          </div>
+        </div>
+
+        <div class="card eeprom">
+          <h2>EEPROM</h2>
+          <div class="row">
+            <div>
+              <div id="config-state" class="state">–</div>
+              <p class="small muted">
+                The Ethernet settings take effect when the board next starts. The I2C address is
+                stored, but this firmware does not act on it yet.
+              </p>
+            </div>
+            <span class="spacer"></span>
+            <button type="button" id="reload-config" data-control>Reload</button>
+            <button type="button" id="save-config" class="accent" data-control>Save to EEPROM</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <section class="card">
+      <h2>Firmware log</h2>
+      <pre id="log" tabindex="0"></pre>
+    </section>
+
+  </body>
+</html>

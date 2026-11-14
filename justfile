@@ -26,6 +26,15 @@ enter-bootloader port="/dev/ttyACM0":
     stty -F "{{port}}" 1200
     sleep 3
 
+# Run the tests of the web control panel. Needs Node.js 20 or later.
+test-web:
+    node --test web/tests/*.test.mjs
+
+# Serve the web control panel at http://localhost:8137 for trying it locally.
+# Pass another port if that one is taken, e.g. `just web 8200`.
+web port="8137":
+    python3 -m http.server --bind localhost --directory web "{{port}}"
+
 # Create the Python environment in .venv with the `axis` package installed.
 python-setup:
     python3 -m venv .venv

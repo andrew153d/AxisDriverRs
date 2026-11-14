@@ -78,3 +78,13 @@ jobs:
         run: .venv/bin/python -m compileall -q python/axis python/examples
       - name: Command line tool starts
         run: .venv/bin/python -m axis --help
+
+  web:
+    name: Web control panel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      # Among them, that the messages in web/protocol.js match proto/axis.proto.
+      - name: Tests
+        run: just test-web
